@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  caster:
+    build: .
+    container_name: ntrip-caster
+    restart: always
+    ports:
+      - "2101:2101" # Port สำหรับ Base/Rover
+      - "3000:3000" # Port สำหรับหน้าเว็บ
+    volumes:
+      - ./data:/app/data # Map โฟลเดอร์เก็บ Database
+    environment:
+      - NODE_ENV=development

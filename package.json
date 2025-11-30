@@ -1,0 +1,14 @@
+{
+  "name": "custom-ntrip-caster",
+  "version": "1.0.0",
+  "description": "NTRIP Caster with Web Dashboard running on Docker",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2",
+    "sqlite3": "^5.1.6"
+  }
+}
