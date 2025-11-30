@@ -5,64 +5,39 @@ const { Server } = require("socket.io");
 const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcryptjs');
 
-// ==========================================
-// ⚙️ CONFIGURATION
-// ==========================================
-const NTRIP_PORT = 2101;     // Port สำหรับอุปกรณ์ (TCP)
-const WEB_PORT = 3000;       // Port สำหรับหน้าเว็บ (HTTP)
-const SALT_ROUNDS = 10;      // ระดับความปลอดภัยรหัสผ่าน
+// --- CONFIGURATION ---
+const NTRIP_PORT = 2101;     
+const WEB_PORT = 3000;       
+const SALT_ROUNDS = 10;      
 
-// ==========================================
-// 🗄️ DATABASE SETUP
-// ==========================================
+// --- DATABASE ---
 const db = new sqlite3.Database('./data/ntrip.sqlite');
 
 db.serialize(() => {
-    // 1. ตาราง Mountpoints (Base Stations)
-    db.run(`CREATE TABLE IF NOT EXISTS mountpoints (
-        name TEXT PRIMARY KEY, 
-        password TEXT, 
-        lat REAL, 
-        lon REAL
-    )`);
-    
-    // 2. ตาราง Users (Rovers)
-    db.run(`CREATE TABLE IF NOT EXISTS users (
-        username TEXT PRIMARY KEY, 
-        password TEXT, 
-        expired_at TEXT,
-        allowed_mountpoints TEXT
-    )`);
-
-    // --- SEED DATA (ข้อมูลเริ่มต้น) ---
+    db.run(`CREATE TABLE IF NOT EXISTS mountpoints (name TEXT PRIMARY KEY, password TEXT, lat REAL, lon REAL)`);
+    db.run(`CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, expired_at TEXT, allowed_mountpoints TEXT)`);
+    // Seed
     const defaultBasePass = 'password'; 
     db.get("SELECT name FROM mountpoints WHERE name = 'TEST01'", (err, row) => {
         if (!row) {
             const hash = bcrypt.hashSync(defaultBasePass, SALT_ROUNDS);
             db.run("INSERT INTO mountpoints (name, password) VALUES (?, ?)", ['TEST01', hash]);
-            console.log("🔒 Seed DB: Created Base 'TEST01'");
         }
     });
-
     const defaultUserPass = '1234';
     db.get("SELECT username FROM users WHERE username = 'user1'", (err, row) => {
         if (!row) {
             const hash = bcrypt.hashSync(defaultUserPass, SALT_ROUNDS);
             db.run("INSERT INTO users (username, password) VALUES (?, ?)", ['user1', hash]);
-            console.log("🔒 Seed DB: Created User 'user1'");
         }
     });
 });
 
-// ==========================================
-// 🧠 MEMORY STATE
-// ==========================================
+// --- STATE ---
 const activeMountpoints = new Map(); 
 const activeClients = new Map();     
 
-// ==========================================
-// 🌐 WEB SERVER & API
-// ==========================================
+// --- WEB ---
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
@@ -70,99 +45,51 @@ const io = new Server(server);
 app.use(express.static('public'));
 app.use(express.json());
 
-// --- API 1: Status Dashboard ---
 app.get('/api/status', (req, res) => {
     const connectionList = [];
-
     activeMountpoints.forEach((mpData, mpName) => {
         const uptime = Math.floor((Date.now() - mpData.startTime) / 1000);
-        
         if (mpData.clients.size === 0) {
-            connectionList.push({
-                mountpoint: mpName,
-                rover: '-', 
-                bytesIn: mpData.bytesIn || 0,
-                uptime: uptime,
-                status: 'WAITING'
-            });
+            connectionList.push({ mountpoint: mpName, rover: '-', bytesIn: mpData.bytesIn || 0, uptime: uptime, status: 'WAITING' });
         } else {
             mpData.clients.forEach(clientSocket => {
                 const clientInfo = activeClients.get(clientSocket);
-                connectionList.push({
-                    mountpoint: mpName,
-                    rover: clientInfo ? clientInfo.username : 'Unknown',
-                    bytesIn: mpData.bytesIn || 0,
-                    uptime: uptime,
-                    status: 'CONNECTED'
-                });
+                connectionList.push({ mountpoint: mpName, rover: clientInfo ? clientInfo.username : 'Unknown', bytesIn: mpData.bytesIn || 0, uptime: uptime, status: 'CONNECTED' });
             });
         }
     });
-    
-    res.json({
-        connections: connectionList,
-        totalBases: activeMountpoints.size,
-        totalRovers: activeClients.size
-    });
+    res.json({ connections: connectionList, totalBases: activeMountpoints.size, totalRovers: activeClients.size });
 });
 
-// --- API 2: Manage Mountpoints ---
-app.get('/api/mountpoints', (req, res) => {
-    db.all("SELECT name FROM mountpoints", [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(rows);
-    });
-});
+app.get('/api/mountpoints', (req, res) => { db.all("SELECT name FROM mountpoints", [], (err, rows) => { if (err) return res.status(500).json(err); res.json(rows); }); });
 app.post('/api/mountpoints', (req, res) => {
     const { name, password } = req.body;
     if (!name || !password) return res.status(400).json({ error: "Missing fields" });
     const hash = bcrypt.hashSync(password, SALT_ROUNDS);
     db.run("INSERT INTO mountpoints (name, password) VALUES (?, ?)", [name, hash], function(err) {
-        if (err) return res.status(500).json({ error: "Name exists or DB error" });
+        if (err) return res.status(500).json({ error: "Error" });
         res.json({ message: "Success", id: this.lastID });
     });
 });
-app.delete('/api/mountpoints/:name', (req, res) => {
-    db.run("DELETE FROM mountpoints WHERE name = ?", [req.params.name], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: "Deleted" });
-    });
-});
+app.delete('/api/mountpoints/:name', (req, res) => { db.run("DELETE FROM mountpoints WHERE name = ?", [req.params.name], (err) => res.json({ message: "Deleted" })); });
 
-// --- API 3: Manage Users ---
-app.get('/api/users', (req, res) => {
-    db.all("SELECT username FROM users", [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(rows);
-    });
-});
+app.get('/api/users', (req, res) => { db.all("SELECT username FROM users", [], (err, rows) => { if (err) return res.status(500).json(err); res.json(rows); }); });
 app.post('/api/users', (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ error: "Missing fields" });
     const hash = bcrypt.hashSync(password, SALT_ROUNDS);
     db.run("INSERT INTO users (username, password) VALUES (?, ?)", [username, hash], function(err) {
-        if (err) return res.status(500).json({ error: "User exists or DB error" });
+        if (err) return res.status(500).json({ error: "Error" });
         res.json({ message: "Success", id: this.lastID });
     });
 });
-app.delete('/api/users/:username', (req, res) => {
-    db.run("DELETE FROM users WHERE username = ?", [req.params.username], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: "Deleted" });
-    });
-});
+app.delete('/api/users/:username', (req, res) => { db.run("DELETE FROM users WHERE username = ?", [req.params.username], (err) => res.json({ message: "Deleted" })); });
 
-server.listen(WEB_PORT, () => {
-    console.log(`🌐 Web Dashboard running on port ${WEB_PORT}`);
-});
+server.listen(WEB_PORT, () => { console.log(`🌐 Web Dashboard running on port ${WEB_PORT}`); });
 
-// ==========================================
-// 📡 NTRIP CASTER SERVER (TCP)
-// ==========================================
+// --- NTRIP CASTER ---
 const ntripServer = net.createServer((socket) => {
-    // 1. ✅ KEEP-ALIVE: ป้องกันการหลุดเมื่อไม่มีข้อมูล
-    socket.setKeepAlive(true, 30000); 
-
+    socket.setKeepAlive(true, 30000); // กันหลุด
     let isAuthenticated = false;
     let mode = ''; 
     let buffer = Buffer.alloc(0);
@@ -172,10 +99,8 @@ const ntripServer = net.createServer((socket) => {
             if (mode === 'SOURCE') handleSourceData(socket, data);
             return;
         }
-
         buffer = Buffer.concat([buffer, data]);
         const headerEnd = buffer.indexOf('\r\n\r\n');
-        
         if (headerEnd !== -1) {
             const headerStr = buffer.slice(0, headerEnd).toString();
             const remainingData = buffer.slice(headerEnd + 4);
@@ -184,17 +109,9 @@ const ntripServer = net.createServer((socket) => {
         }
     });
 
-    // 2. ✅ ERROR HANDLING: ดักจับ Error ไม่ให้ Server ล่ม และโชว์ Log
-    socket.on('error', (err) => {
-        if (err.code !== 'ECONNRESET') {
-            console.error(`⚠️ Socket Error (${socket.remoteAddress}): ${err.message}`);
-        }
-    });
-
+    socket.on('error', (err) => { if (err.code !== 'ECONNRESET') console.error(`⚠️ Socket Error: ${err.message}`); });
     socket.on('close', () => cleanupConnection(socket));
 });
-
-// --- HELPER FUNCTIONS ---
 
 function processHandshake(socket, header, firstDataChunk) {
     const lines = header.split('\r\n');
@@ -204,9 +121,7 @@ function processHandshake(socket, header, firstDataChunk) {
     let mountpoint = '';
     let passwordFromHeader = ''; 
 
-    // ตรวจสอบ Header
     if (method === 'SOURCE') {
-        // เช็ค RTKLIB Format: SOURCE [PASS] /[MOUNT]
         if (requestLine.length >= 3 && !requestLine[1].startsWith('/')) {
              passwordFromHeader = requestLine[1];
              mountpoint = requestLine[2].replace('/', '');
@@ -226,10 +141,8 @@ function processHandshake(socket, header, firstDataChunk) {
         return { user: decoded[0], pass: decoded[1] };
     };
 
-    // === BASE STATION (SOURCE) ===
     if (method === 'SOURCE') {
         let password = passwordFromHeader; 
-        
         if (!password) {
             const icyLine = lines.find(l => l.toLowerCase().startsWith('icy-password:'));
             if (icyLine) password = icyLine.split(':')[1].trim();
@@ -241,7 +154,10 @@ function processHandshake(socket, header, firstDataChunk) {
 
         db.get("SELECT * FROM mountpoints WHERE name = ?", [mountpoint], (err, row) => {
             if (row && bcrypt.compareSync(password, row.password)) {
-                socket.write('ICY 200 OK\r\n\r\n');
+                
+                // ✅ แก้ไขตรงนี้: ตอบกลับแบบ HTTP มาตรฐาน เอาใจ RTKLIB
+                socket.write('HTTP/1.0 200 OK\r\nServer: NTRIP Caster\r\nConnection: close\r\n\r\n');
+                
                 isAuthenticated = true;
                 mode = 'SOURCE';
                 socket.mountpointName = mountpoint;
@@ -255,7 +171,6 @@ function processHandshake(socket, header, firstDataChunk) {
             }
         });
     }
-    // === ROVER (GET) ===
     else if (method === 'GET') {
         const authData = parseBasicAuth(lines);
         if (!authData) { socket.write('ERROR - Auth Required\r\n'); socket.end(); return; }
@@ -302,7 +217,6 @@ function cleanupConnection(socket) {
     }
     if (activeClients.has(socket)) {
         const info = activeClients.get(socket);
-        console.log(`❌ Rover [${info.username}] Disconnected`);
         const mp = activeMountpoints.get(info.mountpoint);
         if (mp) mp.clients.delete(socket);
         activeClients.delete(socket);
