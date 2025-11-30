@@ -1,7 +1,7 @@
 const net = require('net');
 
 // --- ตั้งค่า Server ---
-const HOST = '192.168.1.100'; 
+const HOST = 'landmos.com'; 
 const PORT = 2101;
 
 // ข้อมูล Base Station
