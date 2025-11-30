@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <title>NTRIP Caster Dashboard</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+</head>
+<body>
+    <section class="hero is-info is-small">
+        <div class="hero-body">
+            <p class="title">📡 NTRIP Admin</p>
+            <p class="subtitle">IP: 192.168.1.100</p>
+        </div>
+    </section>
+
+    <div class="container mt-5">
+        <div class="columns">
+            <div class="column is-4">
+                <div class="box">
+                    <h3 class="title is-5">สถานะระบบ</h3>
+                    <div class="level">
+                        <div class="level-item has-text-centered">
+                            <div>
+                                <p class="heading">Base Stations</p>
+                                <p class="title" id="base-count">0</p>
+                            </div>
+                        </div>
+                        <div class="level-item has-text-centered">
+                            <div>
+                                <p class="heading">Active Rovers</p>
+                                <p class="title" id="rover-count">0</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="box">
+                    <h3 class="title is-6">Base Stations Online</h3>
+                    <table class="table is-fullwidth is-striped">
+                        <thead><tr><th>Name</th><th>Clients</th><th>Data (KB)</th></tr></thead>
+                        <tbody id="mp-table"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="column is-8">
+                <div class="box" style="height: 100%;">
+                    <h3 class="title is-5">แผนที่ตำแหน่ง (Live Map)</h3>
+                    <div id="map"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="client.js"></script>
+</body>
+</html>
