@@ -21,7 +21,6 @@ db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS mountpoints (name TEXT PRIMARY KEY, password TEXT, lat REAL, lon REAL)`);
     db.run(`CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, expired_at TEXT, allowed_mountpoints TEXT)`);
 
-    // Seed Data
     const defaultBasePass = 'password'; 
     db.get("SELECT name FROM mountpoints WHERE name = 'TEST01'", (err, row) => {
         if (!row) {
@@ -29,6 +28,7 @@ db.serialize(() => {
             db.run("INSERT INTO mountpoints (name, password) VALUES (?, ?)", ['TEST01', hash]);
         }
     });
+
     const defaultUserPass = '1234';
     db.get("SELECT username FROM users WHERE username = 'user1'", (err, row) => {
         if (!row) {
@@ -54,7 +54,6 @@ const io = new Server(server);
 app.use(express.static('public'));
 app.use(express.json());
 
-// API: Status
 app.get('/api/status', (req, res) => {
     const connectionList = [];
     activeMountpoints.forEach((mpData, mpName) => {
@@ -94,50 +93,44 @@ app.delete('/api/users/:username', (req, res) => db.run("DELETE FROM users WHERE
 server.listen(WEB_PORT, () => { console.log(`🌐 Web Dashboard running on port ${WEB_PORT}`); });
 
 // ==========================================
-// 📡 NTRIP CASTER SERVER (TCP) - Corrected Logic
+// 📡 NTRIP CASTER SERVER (TCP)
 // ==========================================
 const ntripServer = net.createServer((socket) => {
-    socket.setKeepAlive(true, 60000);
-    socket.setNoDelay(true); // ปิด Nagle (ส่งข้อมูลทันที)
-    
+    socket.setKeepAlive(true, 30000); 
+    socket.setNoDelay(true);
+    socket.setTimeout(0);
+
     let isAuthenticated = false;
     let mode = ''; 
     let buffer = Buffer.alloc(0);
 
     socket.on('data', (data) => {
-        // 1. ถ้าผ่านการยืนยันตัวตนแล้ว ให้ส่งข้อมูลเข้า Process ทันที (Fast Path)
         if (isAuthenticated) {
             if (mode === 'SOURCE') handleSourceData(socket, data);
             return;
         }
 
-        // 2. ถ้ายังไม่ยืนยัน ให้สะสม Buffer
         buffer = Buffer.concat([buffer, data]);
-        
-        // หาจุดสิ้นสุด Header (\r\n\r\n)
         const headerEnd = buffer.indexOf('\r\n\r\n');
         
         if (headerEnd !== -1) {
-            // 🔥 STOP! หยุดรับข้อมูลใหม่ชั่วคราว เพื่อป้องกัน Race Condition ระหว่างรอ Database
-            socket.pause(); 
-
-            // แยก Header (String) และ Body (Binary RTCM ที่ติดมา)
             const headerStr = buffer.slice(0, headerEnd).toString();
-            const leftoverData = buffer.slice(headerEnd + 4); // ข้อมูลส่วนเกิน (สำคัญมากสำหรับ RTKLIB)
-            
-            // เคลียร์ Buffer เพราะเราดึงข้อมูลออกมาแล้ว
+            const remainingData = buffer.slice(headerEnd + 4);
             buffer = Buffer.alloc(0); 
-
-            // เข้าสู่กระบวนการตรวจสอบ (Async)
-            processHandshake(socket, headerStr, leftoverData);
+            processHandshake(socket, headerStr, remainingData);
         }
     });
 
-    socket.on('error', (err) => { if (err.code !== 'ECONNRESET') console.error(`⚠️ Socket Error: ${err.message}`); });
+    socket.on('error', (err) => { 
+        if (err.code !== 'ECONNRESET') console.error(`⚠️ Socket Error: ${err.message}`); 
+    });
+    
     socket.on('close', () => cleanupConnection(socket));
 });
 
-function processHandshake(socket, header, leftoverData) {
+function processHandshake(socket, header, firstDataChunk) {
+    console.log(`📥 RAW HEADER RECV:\n${header}`);
+
     const lines = header.split('\r\n');
     const requestLine = lines[0].trim().split(/\s+/); 
     const method = requestLine[0]; 
@@ -145,11 +138,13 @@ function processHandshake(socket, header, leftoverData) {
     let mountpoint = '';
     let passwordFromHeader = ''; 
 
-    // === PARSE HEADER ===
+    // === PARSE HEADER (SOURCE) ===
     if (method === 'SOURCE') {
+        // RTKLIB format: SOURCE [PASS] /[MOUNT] or SOURCE [PASS] [MOUNT]
         if (requestLine.length >= 3 && !requestLine[1].startsWith('/')) {
              passwordFromHeader = requestLine[1];
              mountpoint = requestLine[2].replace('/', '').trim();
+             console.log(`🔍 RTKLIB Format Detected: Mount=${mountpoint}, Pass=${passwordFromHeader ? '***' : 'none'}`);
         } else {
              mountpoint = requestLine[1].replace('/', '').trim();
         }
@@ -177,34 +172,42 @@ function processHandshake(socket, header, leftoverData) {
             if (authData) password = authData.pass; 
         }
 
-        // ตรวจสอบ Database (Async)
+        console.log(`🔐 Authenticating mountpoint [${mountpoint}] with password...`);
+
         db.get("SELECT * FROM mountpoints WHERE name = ?", [mountpoint], (err, row) => {
             if (row && bcrypt.compareSync(password, row.password)) {
                 
-                // ✅ 1. ตอบกลับทันที (Standard Response)
-                socket.write('ICY 200 OK\r\n\r\n');
+                // 🔥 แก้ไขตรงนี้: ส่ง Response ที่ถูกต้องตาม NTRIP Protocol
+                const response = 
+                    'HTTP/1.1 200 OK\r\n' +
+                    'Server: NTRIP-Caster/2.0\r\n' +
+                    'Connection: close\r\n' +
+                    'Content-Type: gnss/data\r\n' +
+                    'Content-Length: 0\r\n' +
+                    '\r\n';
                 
-                // ✅ 2. เปลี่ยนสถานะเป็น Authorized
+                socket.write(response);
+                console.log(`✅ Sent 200 OK to Base [${mountpoint}]`);
+                
                 isAuthenticated = true;
                 mode = 'SOURCE';
                 socket.mountpointName = mountpoint;
+                activeMountpoints.set(mountpoint, { 
+                    socket: socket, 
+                    clients: new Set(), 
+                    bytesIn: 0, 
+                    startTime: Date.now() 
+                });
                 
-                // ✅ 3. บันทึก Session
-                activeMountpoints.set(mountpoint, { socket: socket, clients: new Set(), bytesIn: 0, startTime: Date.now() });
-                console.log(`✅ Base [${mountpoint}] Connected`);
+                console.log(`✅ Base [${mountpoint}] Connected and Ready`);
                 
-                // ✅ 4. Process ข้อมูลส่วนเกิน (RTCM) ที่ติดมากับ Packet แรกทันที!
-                // (นี่คือจุดที่เพื่อนคุณบอกว่าสำคัญที่สุด)
-                if (leftoverData.length > 0) {
-                    // console.log(`📦 Processing initial RTCM burst: ${leftoverData.length} bytes`);
-                    handleSourceData(socket, leftoverData);
+                // ประมวลผล data ที่ส่งมาพร้อม header (ถ้ามี)
+                if (firstDataChunk.length > 0) {
+                    console.log(`📦 Processing ${firstDataChunk.length} bytes from initial data`);
+                    handleSourceData(socket, firstDataChunk);
                 }
-
-                // ✅ 5. RESUME! เปิดรับข้อมูลต่อได้
-                socket.resume();
-
             } else {
-                console.log(`⛔ Login Failed: Base [${mountpoint}]`);
+                console.log(`⛔ Login Failed: Base [${mountpoint}] - Invalid credentials`);
                 socket.write('ERROR - Bad Password\r\n');
                 socket.end();
             }
@@ -213,7 +216,11 @@ function processHandshake(socket, header, leftoverData) {
     // === ROVER (GET) ===
     else if (method === 'GET') {
         const authData = parseBasicAuth(lines);
-        if (!authData) { socket.write('ERROR - Auth Required\r\n'); socket.end(); return; }
+        if (!authData) { 
+            socket.write('HTTP/1.0 401 Unauthorized\r\nWWW-Authenticate: Basic realm="NTRIP"\r\n\r\n'); 
+            socket.end(); 
+            return; 
+        }
         const { user, pass } = authData;
 
         db.get("SELECT * FROM users WHERE username = ?", [user], (err, row) => {
@@ -226,8 +233,7 @@ function processHandshake(socket, header, leftoverData) {
                     const mp = activeMountpoints.get(mountpoint);
                     mp.clients.add(socket);
                     activeClients.set(socket, { username: user, mountpoint: mountpoint });
-                    console.log(`📡 Rover [${user}] connected`);
-                    socket.resume(); // Resume for Rover too
+                    console.log(`📡 Rover [${user}] connected to [${mountpoint}]`);
                 } else {
                     socket.write('ERROR - Mountpoint not available\r\n');
                     socket.end();
@@ -245,10 +251,12 @@ function handleSourceData(socket, data) {
     const mp = activeMountpoints.get(mpName);
     if (mp) {
         mp.bytesIn += data.length;
-        // ส่งต่อให้ Rover ทุกตัว (ถ้า socket ยังไม่ตาย)
+        console.log(`📊 Received ${data.length} bytes from [${mpName}] (Total: ${mp.bytesIn})`);
         if (mp.clients) {
-            mp.clients.forEach(clientSocket => {
-                if (!clientSocket.destroyed) clientSocket.write(data);
+            mp.clients.forEach(c => {
+                if (!c.destroyed) {
+                    c.write(data);
+                }
             });
         }
     }
@@ -263,6 +271,7 @@ function cleanupConnection(socket) {
     }
     if (activeClients.has(socket)) {
         const info = activeClients.get(socket);
+        console.log(`❌ Rover [${info.username}] Disconnected from [${info.mountpoint}]`);
         const mp = activeMountpoints.get(info.mountpoint);
         if (mp) mp.clients.delete(socket);
         activeClients.delete(socket);
