@@ -137,7 +137,7 @@ const ntripServer = net.createServer((socket) => {
     
     socket.setKeepAlive(true, 30000); 
     socket.setNoDelay(true);
-    socket.setTimeout(120000);
+    socket.setTimeout(300000); // เพิ่มเป็น 5 นาที เพื่อให้ GPS มีเวลา warm up
 
     let isAuthenticated = false;
     let mode = ''; 
@@ -182,7 +182,8 @@ const ntripServer = net.createServer((socket) => {
     });
     
     socket.on('timeout', () => {
-        console.error(`⏰ [${socketId}] SOCKET TIMEOUT after 2 minutes`);
+        console.error(`⏰ [${socketId}] SOCKET TIMEOUT after 5 minutes - No RTCM data received`);
+        console.error(`⏰ [${socketId}] Check if GPS receiver is sending RTCM data to RTKLIB`);
         socket.destroy();
     });
     
