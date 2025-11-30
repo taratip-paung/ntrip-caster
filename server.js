@@ -59,97 +59,170 @@ app.get('/api/status', (req, res) => {
     activeMountpoints.forEach((mpData, mpName) => {
         const uptime = Math.floor((Date.now() - mpData.startTime) / 1000);
         if (mpData.clients.size === 0) {
-            connectionList.push({ mountpoint: mpName, rover: '-', bytesIn: mpData.bytesIn || 0, uptime: uptime, status: 'WAITING' });
+            connectionList.push({ 
+                mountpoint: mpName, 
+                rover: '-', 
+                bytesIn: mpData.bytesIn || 0, 
+                uptime: uptime, 
+                status: 'WAITING' 
+            });
         } else {
             mpData.clients.forEach(clientSocket => {
                 const clientInfo = activeClients.get(clientSocket);
-                connectionList.push({ mountpoint: mpName, rover: clientInfo ? clientInfo.username : 'Unknown', bytesIn: mpData.bytesIn || 0, uptime: uptime, status: 'CONNECTED' });
+                connectionList.push({ 
+                    mountpoint: mpName, 
+                    rover: clientInfo ? clientInfo.username : 'Unknown', 
+                    bytesIn: mpData.bytesIn || 0, 
+                    uptime: uptime, 
+                    status: 'CONNECTED' 
+                });
             });
         }
     });
-    res.json({ connections: connectionList, totalBases: activeMountpoints.size, totalRovers: activeClients.size });
+    res.json({ 
+        connections: connectionList, 
+        totalBases: activeMountpoints.size, 
+        totalRovers: activeClients.size 
+    });
 });
 
-app.get('/api/mountpoints', (req, res) => { db.all("SELECT name FROM mountpoints", [], (err, r) => res.json(r)); });
+app.get('/api/mountpoints', (req, res) => { 
+    db.all("SELECT name FROM mountpoints", [], (err, r) => res.json(r)); 
+});
+
 app.post('/api/mountpoints', (req, res) => {
     const { name, password } = req.body;
     const hash = bcrypt.hashSync(password, SALT_ROUNDS);
     db.run("INSERT INTO mountpoints (name, password) VALUES (?, ?)", [name, hash], function(err) {
-        if(err) return res.status(500).json({error: "Error"}); res.json({message: "Success", id: this.lastID});
+        if(err) return res.status(500).json({error: "Error"}); 
+        res.json({message: "Success", id: this.lastID});
     });
 });
-app.delete('/api/mountpoints/:name', (req, res) => db.run("DELETE FROM mountpoints WHERE name = ?", [req.params.name], () => res.json({message:"Deleted"})));
 
-app.get('/api/users', (req, res) => { db.all("SELECT username FROM users", [], (err, r) => res.json(r)); });
+app.delete('/api/mountpoints/:name', (req, res) => {
+    db.run("DELETE FROM mountpoints WHERE name = ?", [req.params.name], () => {
+        res.json({message:"Deleted"});
+    });
+});
+
+app.get('/api/users', (req, res) => { 
+    db.all("SELECT username FROM users", [], (err, r) => res.json(r)); 
+});
+
 app.post('/api/users', (req, res) => {
     const { username, password } = req.body;
     const hash = bcrypt.hashSync(password, SALT_ROUNDS);
     db.run("INSERT INTO users (username, password) VALUES (?, ?)", [username, hash], function(err) {
-        if(err) return res.status(500).json({error: "Error"}); res.json({message: "Success", id: this.lastID});
+        if(err) return res.status(500).json({error: "Error"}); 
+        res.json({message: "Success", id: this.lastID});
     });
 });
-app.delete('/api/users/:username', (req, res) => db.run("DELETE FROM users WHERE username = ?", [req.params.username], () => res.json({message:"Deleted"})));
 
-server.listen(WEB_PORT, () => { console.log(`🌐 Web Dashboard running on port ${WEB_PORT}`); });
+app.delete('/api/users/:username', (req, res) => {
+    db.run("DELETE FROM users WHERE username = ?", [req.params.username], () => {
+        res.json({message:"Deleted"});
+    });
+});
+
+server.listen(WEB_PORT, () => { 
+    console.log(`🌐 Web Dashboard running on port ${WEB_PORT}`); 
+});
 
 // ==========================================
 // 📡 NTRIP CASTER SERVER (TCP)
 // ==========================================
 const ntripServer = net.createServer((socket) => {
+    const socketId = `${socket.remoteAddress}:${socket.remotePort}`;
+    console.log(`\n🔌 NEW CONNECTION from ${socketId}`);
+    
     socket.setKeepAlive(true, 30000); 
     socket.setNoDelay(true);
-    socket.setTimeout(0);
+    socket.setTimeout(120000);
 
     let isAuthenticated = false;
     let mode = ''; 
     let buffer = Buffer.alloc(0);
+    let dataPacketCount = 0;
 
     socket.on('data', (data) => {
+        console.log(`📦 [${socketId}] DATA EVENT: ${data.length} bytes, Auth=${isAuthenticated}, Mode=${mode}`);
+        
         if (isAuthenticated) {
-            if (mode === 'SOURCE') handleSourceData(socket, data);
+            if (mode === 'SOURCE') {
+                dataPacketCount++;
+                console.log(`📡 [${socketId}] Packet #${dataPacketCount}: ${data.length} bytes`);
+                handleSourceData(socket, data);
+            }
             return;
         }
 
         buffer = Buffer.concat([buffer, data]);
+        console.log(`📦 [${socketId}] Buffer size: ${buffer.length} bytes`);
+        
         const headerEnd = buffer.indexOf('\r\n\r\n');
         
         if (headerEnd !== -1) {
             const headerStr = buffer.slice(0, headerEnd).toString();
             const remainingData = buffer.slice(headerEnd + 4);
+            console.log(`📦 [${socketId}] Header complete, remaining data: ${remainingData.length} bytes`);
             buffer = Buffer.alloc(0); 
-            processHandshake(socket, headerStr, remainingData);
+            
+            processHandshake(socket, headerStr, remainingData, socketId, () => {
+                isAuthenticated = true;
+            }, (newMode) => {
+                mode = newMode;
+            });
+        } else {
+            console.log(`⏳ [${socketId}] Waiting for complete header...`);
         }
     });
 
     socket.on('error', (err) => { 
-        if (err.code !== 'ECONNRESET') console.error(`⚠️ Socket Error: ${err.message}`); 
+        console.error(`⚠️ [${socketId}] SOCKET ERROR: ${err.code} - ${err.message}`);
     });
     
-    socket.on('close', () => cleanupConnection(socket));
+    socket.on('timeout', () => {
+        console.error(`⏰ [${socketId}] SOCKET TIMEOUT after 2 minutes`);
+        socket.destroy();
+    });
+    
+    socket.on('close', (hadError) => {
+        console.log(`🔌 [${socketId}] SOCKET CLOSE EVENT - Had Error: ${hadError}, Packets received: ${dataPacketCount}`);
+        cleanupConnection(socket, socketId);
+    });
+    
+    socket.on('end', () => {
+        console.log(`🔌 [${socketId}] SOCKET END EVENT (client initiated close)`);
+    });
 });
 
-function processHandshake(socket, header, firstDataChunk) {
-    console.log(`📥 RAW HEADER RECV:\n${header}`);
+function processHandshake(socket, header, firstDataChunk, socketId, setAuthenticated, setMode) {
+    console.log(`\n📥 [${socketId}] ========== HANDSHAKE START ==========`);
+    console.log(`📥 [${socketId}] RAW HEADER:\n${header}`);
+    console.log(`📥 [${socketId}] First data chunk: ${firstDataChunk.length} bytes`);
 
     const lines = header.split('\r\n');
     const requestLine = lines[0].trim().split(/\s+/); 
     const method = requestLine[0]; 
     
+    console.log(`📥 [${socketId}] Method: ${method}`);
+    console.log(`📥 [${socketId}] Request line parts: ${JSON.stringify(requestLine)}`);
+    
     let mountpoint = '';
     let passwordFromHeader = ''; 
 
-    // === PARSE HEADER (SOURCE) ===
     if (method === 'SOURCE') {
-        // RTKLIB format: SOURCE [PASS] /[MOUNT] or SOURCE [PASS] [MOUNT]
         if (requestLine.length >= 3 && !requestLine[1].startsWith('/')) {
              passwordFromHeader = requestLine[1];
              mountpoint = requestLine[2].replace('/', '').trim();
-             console.log(`🔍 RTKLIB Format Detected: Mount=${mountpoint}, Pass=${passwordFromHeader ? '***' : 'none'}`);
+             console.log(`🔍 [${socketId}] RTKLIB Format: Mount=${mountpoint}, Pass=${passwordFromHeader ? '***' : 'none'}`);
         } else {
              mountpoint = requestLine[1].replace('/', '').trim();
+             console.log(`🔍 [${socketId}] Standard Format: Mount=${mountpoint}`);
         }
     } else {
         mountpoint = requestLine[1].replace('/', '').trim();
+        console.log(`🔍 [${socketId}] GET Format: Mount=${mountpoint}`);
     }
 
     const parseBasicAuth = (lines) => {
@@ -160,122 +233,200 @@ function processHandshake(socket, header, firstDataChunk) {
         return { user: decoded[0], pass: decoded[1] };
     };
 
-    // === BASE STATION (SOURCE) ===
     if (method === 'SOURCE') {
         let password = passwordFromHeader; 
         if (!password) {
             const icyLine = lines.find(l => l.toLowerCase().startsWith('icy-password:'));
-            if (icyLine) password = icyLine.split(':')[1].trim();
+            if (icyLine) {
+                password = icyLine.split(':')[1].trim();
+                console.log(`🔑 [${socketId}] Found password in ICY-Password header`);
+            }
         }
         if (!password) {
             const authData = parseBasicAuth(lines);
-            if (authData) password = authData.pass; 
+            if (authData) {
+                password = authData.pass;
+                console.log(`🔑 [${socketId}] Found password in Basic Auth`);
+            }
         }
 
-        console.log(`🔐 Authenticating mountpoint [${mountpoint}] with password...`);
+        console.log(`🔐 [${socketId}] Authenticating mountpoint [${mountpoint}]...`);
 
         db.get("SELECT * FROM mountpoints WHERE name = ?", [mountpoint], (err, row) => {
-            if (row && bcrypt.compareSync(password, row.password)) {
+            if (err) {
+                console.error(`❌ [${socketId}] Database error: ${err.message}`);
+                socket.write('ERROR - Database Error\r\n');
+                socket.end();
+                return;
+            }
+            
+            if (!row) {
+                console.log(`⛔ [${socketId}] Mountpoint [${mountpoint}] NOT FOUND in database`);
+                socket.write('ERROR - Mountpoint Not Found\r\n');
+                socket.end();
+                return;
+            }
+            
+            const passwordMatch = bcrypt.compareSync(password, row.password);
+            console.log(`🔐 [${socketId}] Password check: ${passwordMatch ? 'MATCH' : 'NO MATCH'}`);
+            
+            if (passwordMatch) {
+                const response = 'ICY 200 OK\r\n\r\n';
                 
-                // 🔥 แก้ไขตรงนี้: ส่ง Response ที่ถูกต้องตาม NTRIP Protocol
-                const response = 
-                    'HTTP/1.1 200 OK\r\n' +
-                    'Server: NTRIP-Caster/2.0\r\n' +
-                    'Connection: close\r\n' +
-                    'Content-Type: gnss/data\r\n' +
-                    'Content-Length: 0\r\n' +
-                    '\r\n';
+                console.log(`✅ [${socketId}] Sending response: ${response.replace(/\r\n/g, '\\r\\n')}`);
                 
-                socket.write(response);
-                console.log(`✅ Sent 200 OK to Base [${mountpoint}]`);
+                const writeSuccess = socket.write(response);
+                console.log(`✅ [${socketId}] Write success: ${writeSuccess}`);
+                console.log(`✅ [${socketId}] Socket writable: ${socket.writable}`);
+                console.log(`✅ [${socketId}] Socket destroyed: ${socket.destroyed}`);
                 
-                isAuthenticated = true;
-                mode = 'SOURCE';
+                setAuthenticated();
+                setMode('SOURCE');
                 socket.mountpointName = mountpoint;
+                socket.socketId = socketId;
+                
                 activeMountpoints.set(mountpoint, { 
                     socket: socket, 
                     clients: new Set(), 
                     bytesIn: 0, 
-                    startTime: Date.now() 
+                    startTime: Date.now(),
+                    socketId: socketId
                 });
                 
-                console.log(`✅ Base [${mountpoint}] Connected and Ready`);
+                console.log(`✅ [${socketId}] Base [${mountpoint}] Connected and Ready`);
+                console.log(`📊 [${socketId}] Active mountpoints: ${activeMountpoints.size}`);
                 
-                // ประมวลผล data ที่ส่งมาพร้อม header (ถ้ามี)
                 if (firstDataChunk.length > 0) {
-                    console.log(`📦 Processing ${firstDataChunk.length} bytes from initial data`);
+                    console.log(`📦 [${socketId}] Processing ${firstDataChunk.length} bytes from initial data`);
                     handleSourceData(socket, firstDataChunk);
+                } else {
+                    console.log(`⏳ [${socketId}] Waiting for RTCM data from base station...`);
                 }
+                
+                console.log(`📥 [${socketId}] ========== HANDSHAKE END ==========\n`);
             } else {
-                console.log(`⛔ Login Failed: Base [${mountpoint}] - Invalid credentials`);
+                console.log(`⛔ [${socketId}] Login Failed: Invalid password for [${mountpoint}]`);
                 socket.write('ERROR - Bad Password\r\n');
                 socket.end();
             }
         });
-    }
-    // === ROVER (GET) ===
-    else if (method === 'GET') {
+    } else if (method === 'GET') {
+        console.log(`📡 [${socketId}] Processing ROVER connection...`);
         const authData = parseBasicAuth(lines);
         if (!authData) { 
+            console.log(`⛔ [${socketId}] No authentication provided`);
             socket.write('HTTP/1.0 401 Unauthorized\r\nWWW-Authenticate: Basic realm="NTRIP"\r\n\r\n'); 
             socket.end(); 
             return; 
         }
         const { user, pass } = authData;
+        console.log(`🔐 [${socketId}] Authenticating rover user [${user}]...`);
 
         db.get("SELECT * FROM users WHERE username = ?", [user], (err, row) => {
             if (row && bcrypt.compareSync(pass, row.password)) {
+                console.log(`✅ [${socketId}] User [${user}] authenticated`);
                 if (activeMountpoints.has(mountpoint)) {
+                    console.log(`✅ [${socketId}] Mountpoint [${mountpoint}] is available`);
                     socket.write('ICY 200 OK\r\n\r\n');
-                    isAuthenticated = true;
-                    mode = 'CLIENT';
+                    setAuthenticated();
+                    setMode('CLIENT');
                     socket.username = user;
+                    socket.socketId = socketId;
                     const mp = activeMountpoints.get(mountpoint);
                     mp.clients.add(socket);
                     activeClients.set(socket, { username: user, mountpoint: mountpoint });
-                    console.log(`📡 Rover [${user}] connected to [${mountpoint}]`);
+                    console.log(`📡 [${socketId}] Rover [${user}] connected to [${mountpoint}]`);
                 } else {
+                    console.log(`⛔ [${socketId}] Mountpoint [${mountpoint}] not available`);
                     socket.write('ERROR - Mountpoint not available\r\n');
                     socket.end();
                 }
             } else {
+                console.log(`⛔ [${socketId}] Invalid credentials for user [${user}]`);
                 socket.write('HTTP/1.0 401 Unauthorized\r\n\r\n');
                 socket.end();
             }
         });
+    } else {
+        console.log(`⛔ [${socketId}] Unknown method: ${method}`);
+        socket.write('ERROR - Unknown Method\r\n');
+        socket.end();
     }
 }
 
 function handleSourceData(socket, data) {
     const mpName = socket.mountpointName;
+    const socketId = socket.socketId || 'unknown';
     const mp = activeMountpoints.get(mpName);
-    if (mp) {
-        mp.bytesIn += data.length;
-        console.log(`📊 Received ${data.length} bytes from [${mpName}] (Total: ${mp.bytesIn})`);
-        if (mp.clients) {
-            mp.clients.forEach(c => {
-                if (!c.destroyed) {
-                    c.write(data);
-                }
-            });
-        }
+    
+    if (!mp) {
+        console.error(`❌ [${socketId}] No mountpoint found for [${mpName}]`);
+        return;
+    }
+    
+    mp.bytesIn += data.length;
+    
+    if (mp.bytesIn <= data.length * 3) {
+        const hexDump = data.slice(0, Math.min(32, data.length)).toString('hex').match(/.{1,2}/g).join(' ');
+        console.log(`📊 [${socketId}] First RTCM data: ${hexDump}...`);
+    }
+    
+    console.log(`📊 [${socketId}] Received ${data.length} bytes from [${mpName}] (Total: ${mp.bytesIn}, Clients: ${mp.clients.size})`);
+    
+    if (mp.clients && mp.clients.size > 0) {
+        let sentCount = 0;
+        mp.clients.forEach(c => {
+            if (!c.destroyed && c.writable) {
+                c.write(data);
+                sentCount++;
+            } else {
+                console.log(`⚠️ [${socketId}] Skipping destroyed/unwritable client`);
+            }
+        });
+        console.log(`📤 [${socketId}] Broadcasted to ${sentCount} rover(s)`);
+    } else {
+        console.log(`⏳ [${socketId}] No rovers connected yet`);
     }
 }
 
-function cleanupConnection(socket) {
+function cleanupConnection(socket, socketId) {
+    console.log(`\n🧹 [${socketId}] ========== CLEANUP START ==========`);
+    
     if (socket.mountpointName) {
-        console.log(`❌ Base [${socket.mountpointName}] Disconnected`);
-        const mp = activeMountpoints.get(socket.mountpointName);
-        if (mp && mp.clients) mp.clients.forEach(c => c.end());
-        activeMountpoints.delete(socket.mountpointName);
+        const mpName = socket.mountpointName;
+        console.log(`❌ [${socketId}] Cleaning up BASE station [${mpName}]`);
+        const mp = activeMountpoints.get(mpName);
+        
+        if (mp) {
+            console.log(`📊 [${socketId}] Final stats - Bytes received: ${mp.bytesIn}, Connected rovers: ${mp.clients.size}`);
+            if (mp.clients && mp.clients.size > 0) {
+                console.log(`🔌 [${socketId}] Disconnecting ${mp.clients.size} rover(s)...`);
+                mp.clients.forEach(c => {
+                    if (!c.destroyed) {
+                        c.end();
+                    }
+                });
+            }
+            activeMountpoints.delete(mpName);
+            console.log(`📊 [${socketId}] Remaining active mountpoints: ${activeMountpoints.size}`);
+        } else {
+            console.log(`⚠️ [${socketId}] Mountpoint [${mpName}] already removed`);
+        }
     }
+    
     if (activeClients.has(socket)) {
         const info = activeClients.get(socket);
-        console.log(`❌ Rover [${info.username}] Disconnected from [${info.mountpoint}]`);
+        console.log(`❌ [${socketId}] Cleaning up ROVER [${info.username}] from [${info.mountpoint}]`);
         const mp = activeMountpoints.get(info.mountpoint);
-        if (mp) mp.clients.delete(socket);
+        if (mp) {
+            mp.clients.delete(socket);
+            console.log(`📊 [${socketId}] Remaining rovers on [${info.mountpoint}]: ${mp.clients.size}`);
+        }
         activeClients.delete(socket);
+        console.log(`📊 [${socketId}] Remaining active rovers: ${activeClients.size}`);
     }
+    
+    console.log(`🧹 [${socketId}] ========== CLEANUP END ==========\n`);
 }
 
 ntripServer.listen(NTRIP_PORT, () => {
