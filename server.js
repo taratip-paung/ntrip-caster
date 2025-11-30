@@ -5,18 +5,23 @@ const { Server } = require("socket.io");
 const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcryptjs');
 
-// --- CONFIGURATION ---
-const NTRIP_PORT = 2101;     
-const WEB_PORT = 3000;       
-const SALT_ROUNDS = 10;      
+// ==========================================
+// ⚙️ CONFIGURATION
+// ==========================================
+const NTRIP_PORT = 2101;
+const WEB_PORT = 3000;
+const SALT_ROUNDS = 10;
 
-// --- DATABASE ---
+// ==========================================
+// 🗄️ DATABASE SETUP
+// ==========================================
 const db = new sqlite3.Database('./data/ntrip.sqlite');
 
 db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS mountpoints (name TEXT PRIMARY KEY, password TEXT, lat REAL, lon REAL)`);
     db.run(`CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, expired_at TEXT, allowed_mountpoints TEXT)`);
-    // Seed
+
+    // SEED DATA
     const defaultBasePass = 'password'; 
     db.get("SELECT name FROM mountpoints WHERE name = 'TEST01'", (err, row) => {
         if (!row) {
@@ -24,6 +29,7 @@ db.serialize(() => {
             db.run("INSERT INTO mountpoints (name, password) VALUES (?, ?)", ['TEST01', hash]);
         }
     });
+
     const defaultUserPass = '1234';
     db.get("SELECT username FROM users WHERE username = 'user1'", (err, row) => {
         if (!row) {
@@ -33,11 +39,15 @@ db.serialize(() => {
     });
 });
 
-// --- STATE ---
+// ==========================================
+// 🧠 MEMORY STATE
+// ==========================================
 const activeMountpoints = new Map(); 
 const activeClients = new Map();     
 
-// --- WEB ---
+// ==========================================
+// 🌐 WEB SERVER & API
+// ==========================================
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
@@ -45,6 +55,7 @@ const io = new Server(server);
 app.use(express.static('public'));
 app.use(express.json());
 
+// API: Status
 app.get('/api/status', (req, res) => {
     const connectionList = [];
     activeMountpoints.forEach((mpData, mpName) => {
@@ -61,6 +72,7 @@ app.get('/api/status', (req, res) => {
     res.json({ connections: connectionList, totalBases: activeMountpoints.size, totalRovers: activeClients.size });
 });
 
+// API: Mountpoints
 app.get('/api/mountpoints', (req, res) => { db.all("SELECT name FROM mountpoints", [], (err, rows) => { if (err) return res.status(500).json(err); res.json(rows); }); });
 app.post('/api/mountpoints', (req, res) => {
     const { name, password } = req.body;
@@ -73,6 +85,7 @@ app.post('/api/mountpoints', (req, res) => {
 });
 app.delete('/api/mountpoints/:name', (req, res) => { db.run("DELETE FROM mountpoints WHERE name = ?", [req.params.name], (err) => res.json({ message: "Deleted" })); });
 
+// API: Users
 app.get('/api/users', (req, res) => { db.all("SELECT username FROM users", [], (err, rows) => { if (err) return res.status(500).json(err); res.json(rows); }); });
 app.post('/api/users', (req, res) => {
     const { username, password } = req.body;
@@ -87,9 +100,11 @@ app.delete('/api/users/:username', (req, res) => { db.run("DELETE FROM users WHE
 
 server.listen(WEB_PORT, () => { console.log(`🌐 Web Dashboard running on port ${WEB_PORT}`); });
 
-// --- NTRIP CASTER ---
+// ==========================================
+// 📡 NTRIP CASTER SERVER (TCP)
+// ==========================================
 const ntripServer = net.createServer((socket) => {
-    socket.setKeepAlive(true, 30000); // กันหลุด
+    socket.setKeepAlive(true, 30000); // Keep-Alive
     let isAuthenticated = false;
     let mode = ''; 
     let buffer = Buffer.alloc(0);
@@ -121,7 +136,9 @@ function processHandshake(socket, header, firstDataChunk) {
     let mountpoint = '';
     let passwordFromHeader = ''; 
 
+    // === PARSE HEADER ===
     if (method === 'SOURCE') {
+        // เช็ค RTKLIB Format (SOURCE PASS /MOUNT)
         if (requestLine.length >= 3 && !requestLine[1].startsWith('/')) {
              passwordFromHeader = requestLine[1];
              mountpoint = requestLine[2].replace('/', '');
@@ -141,6 +158,7 @@ function processHandshake(socket, header, firstDataChunk) {
         return { user: decoded[0], pass: decoded[1] };
     };
 
+    // === BASE STATION (SOURCE) ===
     if (method === 'SOURCE') {
         let password = passwordFromHeader; 
         if (!password) {
@@ -155,8 +173,17 @@ function processHandshake(socket, header, firstDataChunk) {
         db.get("SELECT * FROM mountpoints WHERE name = ?", [mountpoint], (err, row) => {
             if (row && bcrypt.compareSync(password, row.password)) {
                 
-                // ✅ แก้ไขตรงนี้: ตอบกลับแบบ HTTP มาตรฐาน เอาใจ RTKLIB
-                socket.write('HTTP/1.0 200 OK\r\nServer: NTRIP Caster\r\nConnection: close\r\n\r\n');
+                // 🔥🔥 แก้ไขจุดสำคัญตรงนี้ 🔥🔥
+                // ตอบกลับด้วย Header มาตรฐาน HTTP/1.1 และ Ntrip/2.0
+                // เพื่อให้ RTKLIB รู้สึกว่าคุยกับ Server มาตรฐาน แล้วจะไม่ตัดสาย
+                const response = 
+                    'HTTP/1.1 200 OK\r\n' +
+                    'Ntrip-Version: Ntrip/2.0\r\n' +
+                    'Server: NTRIP Caster/1.0\r\n' +
+                    'Connection: close\r\n' + // สำคัญ: บอกว่าจบ Handshake แล้ว ให้เริ่มส่ง Data ได้เลย
+                    '\r\n';
+                
+                socket.write(response);
                 
                 isAuthenticated = true;
                 mode = 'SOURCE';
@@ -171,6 +198,7 @@ function processHandshake(socket, header, firstDataChunk) {
             }
         });
     }
+    // === ROVER (GET) ===
     else if (method === 'GET') {
         const authData = parseBasicAuth(lines);
         if (!authData) { socket.write('ERROR - Auth Required\r\n'); socket.end(); return; }
@@ -179,6 +207,7 @@ function processHandshake(socket, header, firstDataChunk) {
         db.get("SELECT * FROM users WHERE username = ?", [user], (err, row) => {
             if (row && bcrypt.compareSync(pass, row.password)) {
                 if (activeMountpoints.has(mountpoint)) {
+                    // Rover ให้ตอบ ICY เหมือนเดิม (Compatibility สูงสุด)
                     socket.write('ICY 200 OK\r\n\r\n');
                     isAuthenticated = true;
                     mode = 'CLIENT';
