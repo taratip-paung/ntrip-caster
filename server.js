@@ -233,28 +233,6 @@ function processHandshake(socket, header, firstDataChunk, socketId, setAuthentic
         return { user: decoded[0], pass: decoded[1] };
     };
 
-    // ตรวจสอบว่ามี STR: header หรือไม่ (RTKLIB บางทีขอ sourcetable ก่อน)
-    const strLine = lines.find(l => l.toLowerCase().startsWith('str:'));
-    const isSourcetableRequest = strLine !== undefined;
-    
-    if (isSourcetableRequest) {
-        console.log(`📋 [${socketId}] Detected Sourcetable Request (STR: header present)`);
-        console.log(`📋 [${socketId}] Sending sourcetable...`);
-        
-        // ส่ง Sourcetable กลับไป
-        const sourcetable = 
-            'SOURCETABLE 200 OK\r\n' +
-            'Server: NTRIP-Caster/2.0\r\n' +
-            'Content-Type: text/plain\r\n' +
-            'Content-Length: 0\r\n' +
-            '\r\n';
-        
-        socket.write(sourcetable);
-        console.log(`✅ [${socketId}] Sourcetable sent, closing connection`);
-        socket.end();
-        return;
-    }
-
     if (method === 'SOURCE') {
         let password = passwordFromHeader; 
         if (!password) {
@@ -293,12 +271,11 @@ function processHandshake(socket, header, firstDataChunk, socketId, setAuthentic
             console.log(`🔐 [${socketId}] Password check: ${passwordMatch ? 'MATCH' : 'NO MATCH'}`);
             
             if (passwordMatch) {
-                // 🔥 CRITICAL FIX: RTKLIB demo5 ต้องการ HTTP response ไม่ใช่ ICY!
-                // ลองหลาย format เพื่อหา format ที่ RTKLIB ยอมรับ
-                const response = 
-                    'HTTP/1.0 200 OK\r\n' +
-                    'Server: NTRIP Caster\r\n' +
-                    '\r\n';
+                // 🔥 RTKLIB demo5 ส่ง STR: (ว่าง) มาด้วย แต่ไม่ได้หมายถึงขอ sourcetable
+                // มันเป็นแค่ส่วนหนึ่งของ NTRIP 2.0 protocol
+                // ตอบกลับด้วย OK ธรรมดา ไม่ต้องส่ง sourcetable
+                
+                const response = 'OK\r\n';
                 
                 console.log(`✅ [${socketId}] Sending response: ${response.replace(/\r\n/g, '\\r\\n')}`);
                 
