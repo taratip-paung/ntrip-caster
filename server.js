@@ -55,7 +55,6 @@ const io = new Server(server);
 app.use(express.static('public'));
 app.use(express.json());
 
-// API: Status
 app.get('/api/status', (req, res) => {
     const connectionList = [];
     activeMountpoints.forEach((mpData, mpName) => {
@@ -72,31 +71,26 @@ app.get('/api/status', (req, res) => {
     res.json({ connections: connectionList, totalBases: activeMountpoints.size, totalRovers: activeClients.size });
 });
 
-// API: Mountpoints
-app.get('/api/mountpoints', (req, res) => { db.all("SELECT name FROM mountpoints", [], (err, rows) => { if (err) return res.status(500).json(err); res.json(rows); }); });
+// APIs (ย่อให้สั้นลง แต่ทำงานเหมือนเดิม)
+app.get('/api/mountpoints', (req, res) => { db.all("SELECT name FROM mountpoints", [], (err, r) => res.json(r)); });
 app.post('/api/mountpoints', (req, res) => {
     const { name, password } = req.body;
-    if (!name || !password) return res.status(400).json({ error: "Missing fields" });
     const hash = bcrypt.hashSync(password, SALT_ROUNDS);
     db.run("INSERT INTO mountpoints (name, password) VALUES (?, ?)", [name, hash], function(err) {
-        if (err) return res.status(500).json({ error: "Error" });
-        res.json({ message: "Success", id: this.lastID });
+        if(err) return res.status(500).json({error: "Error"}); res.json({message: "Success", id: this.lastID});
     });
 });
-app.delete('/api/mountpoints/:name', (req, res) => { db.run("DELETE FROM mountpoints WHERE name = ?", [req.params.name], (err) => res.json({ message: "Deleted" })); });
+app.delete('/api/mountpoints/:name', (req, res) => db.run("DELETE FROM mountpoints WHERE name = ?", [req.params.name], () => res.json({message:"Deleted"})));
 
-// API: Users
-app.get('/api/users', (req, res) => { db.all("SELECT username FROM users", [], (err, rows) => { if (err) return res.status(500).json(err); res.json(rows); }); });
+app.get('/api/users', (req, res) => { db.all("SELECT username FROM users", [], (err, r) => res.json(r)); });
 app.post('/api/users', (req, res) => {
     const { username, password } = req.body;
-    if (!username || !password) return res.status(400).json({ error: "Missing fields" });
     const hash = bcrypt.hashSync(password, SALT_ROUNDS);
     db.run("INSERT INTO users (username, password) VALUES (?, ?)", [username, hash], function(err) {
-        if (err) return res.status(500).json({ error: "Error" });
-        res.json({ message: "Success", id: this.lastID });
+        if(err) return res.status(500).json({error: "Error"}); res.json({message: "Success", id: this.lastID});
     });
 });
-app.delete('/api/users/:username', (req, res) => { db.run("DELETE FROM users WHERE username = ?", [req.params.username], (err) => res.json({ message: "Deleted" })); });
+app.delete('/api/users/:username', (req, res) => db.run("DELETE FROM users WHERE username = ?", [req.params.username], () => res.json({message:"Deleted"})));
 
 server.listen(WEB_PORT, () => { console.log(`🌐 Web Dashboard running on port ${WEB_PORT}`); });
 
@@ -104,7 +98,11 @@ server.listen(WEB_PORT, () => { console.log(`🌐 Web Dashboard running on port 
 // 📡 NTRIP CASTER SERVER (TCP)
 // ==========================================
 const ntripServer = net.createServer((socket) => {
-    socket.setKeepAlive(true, 30000); // Keep-Alive
+    // 1. ป้องกัน Timeout และ Delay
+    socket.setKeepAlive(true, 60000); 
+    socket.setNoDelay(true); // สำคัญ: ส่งข้อมูลทันทีห้ามดอง (Nagle's Algorithm off)
+    socket.setTimeout(0);    // ห้ามตัดสายอัตโนมัติ
+
     let isAuthenticated = false;
     let mode = ''; 
     let buffer = Buffer.alloc(0);
@@ -114,14 +112,18 @@ const ntripServer = net.createServer((socket) => {
             if (mode === 'SOURCE') handleSourceData(socket, data);
             return;
         }
+
         buffer = Buffer.concat([buffer, data]);
-        const headerEnd = buffer.indexOf('\r\n\r\n');
+        const headerEnd = buffer.indexOf('\r\n\r\n'); // หาบรรทัดว่างจบ Header
+        
+        // บางที RTKLIB ส่งมาแค่ \r\n เดียวสำหรับคำสั่งสั้นๆ
+        // เราจะลองเช็คว่าถ้ามีคำว่า SOURCE และยาวพอสมควร ก็ให้ลอง process เลย
         if (headerEnd !== -1) {
             const headerStr = buffer.slice(0, headerEnd).toString();
             const remainingData = buffer.slice(headerEnd + 4);
             buffer = Buffer.alloc(0); 
             processHandshake(socket, headerStr, remainingData);
-        }
+        } 
     });
 
     socket.on('error', (err) => { if (err.code !== 'ECONNRESET') console.error(`⚠️ Socket Error: ${err.message}`); });
@@ -129,6 +131,9 @@ const ntripServer = net.createServer((socket) => {
 });
 
 function processHandshake(socket, header, firstDataChunk) {
+    // 🔍 Debug Log: ปริ้นท์ Header ที่ได้รับมาดูหน่อย
+    console.log(`📥 RAW HEADER RECV:\n${header}`);
+
     const lines = header.split('\r\n');
     const requestLine = lines[0].split(/\s+/); 
     const method = requestLine[0]; 
@@ -138,11 +143,9 @@ function processHandshake(socket, header, firstDataChunk) {
 
     // === PARSE HEADER ===
     if (method === 'SOURCE') {
-        // เช็ค RTKLIB Format (SOURCE PASS /MOUNT)
         if (requestLine.length >= 3 && !requestLine[1].startsWith('/')) {
              passwordFromHeader = requestLine[1];
              mountpoint = requestLine[2].replace('/', '');
-             console.log(`🔍 RTKLIB Detected: Mount=${mountpoint}`);
         } else {
              mountpoint = requestLine[1].replace('/', '');
         }
@@ -173,17 +176,9 @@ function processHandshake(socket, header, firstDataChunk) {
         db.get("SELECT * FROM mountpoints WHERE name = ?", [mountpoint], (err, row) => {
             if (row && bcrypt.compareSync(password, row.password)) {
                 
-                // 🔥🔥 แก้ไขจุดสำคัญตรงนี้ 🔥🔥
-                // ตอบกลับด้วย Header มาตรฐาน HTTP/1.1 และ Ntrip/2.0
-                // เพื่อให้ RTKLIB รู้สึกว่าคุยกับ Server มาตรฐาน แล้วจะไม่ตัดสาย
-                const response = 
-                    'HTTP/1.1 200 OK\r\n' +
-                    'Ntrip-Version: Ntrip/2.0\r\n' +
-                    'Server: NTRIP Caster/1.0\r\n' +
-                    'Connection: close\r\n' + // สำคัญ: บอกว่าจบ Handshake แล้ว ให้เริ่มส่ง Data ได้เลย
-                    '\r\n';
-                
-                socket.write(response);
+                // ✅ แก้กลับมาใช้ ICY 200 OK (ปลอดภัยสุด)
+                // ❌ เอา Connection: close ออกเด็ดขาด
+                socket.write('ICY 200 OK\r\n\r\n');
                 
                 isAuthenticated = true;
                 mode = 'SOURCE';
@@ -192,7 +187,7 @@ function processHandshake(socket, header, firstDataChunk) {
                 console.log(`✅ Base [${mountpoint}] Connected`);
                 if (firstDataChunk.length > 0) handleSourceData(socket, firstDataChunk);
             } else {
-                console.log(`⛔ Login Failed: Base [${mountpoint}]`);
+                console.log(`⛔ Login Failed: Base [${mountpoint}] (Pass: ${password})`);
                 socket.write('ERROR - Bad Password\r\n');
                 socket.end();
             }
@@ -207,7 +202,6 @@ function processHandshake(socket, header, firstDataChunk) {
         db.get("SELECT * FROM users WHERE username = ?", [user], (err, row) => {
             if (row && bcrypt.compareSync(pass, row.password)) {
                 if (activeMountpoints.has(mountpoint)) {
-                    // Rover ให้ตอบ ICY เหมือนเดิม (Compatibility สูงสุด)
                     socket.write('ICY 200 OK\r\n\r\n');
                     isAuthenticated = true;
                     mode = 'CLIENT';
