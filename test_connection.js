@@ -1,25 +1,30 @@
 const net = require('net');
 
-// --- แก้ IP ให้ตรงกับ LXC ของคุณ ---
+// --- ตั้งค่า Server ---
 const HOST = '192.168.1.100'; 
 const PORT = 2101;
 
-// ข้อมูลจำลอง Base Station (รหัส: password)
+// ข้อมูล Base Station
 const BASE_MOUNTPOINT = 'LMB1';
 const BASE_PASSWORD = '1234';
 
-// ข้อมูลจำลอง Rover (รหัส: 1234)
-const ROVER_USER = 'LMR1';
-const ROVER_PASS = '1234'; 
+// ข้อมูล Rover 1
+const ROVER1_USER = 'LMR1';
+const ROVER1_PASS = '1234'; 
 
-// --- 1. จำลอง Base Station ---
+// ข้อมูล Rover 2
+const ROVER2_USER = 'LMR2';
+const ROVER2_PASS = '1234'; 
+
+console.log(`--- 🚀 เริ่มการทดสอบ 1 Base + 2 Rovers ที่ ${HOST}:${PORT} ---`);
+
+// --- 1. เริ่มต้น Base Station ---
 const baseClient = new net.Socket();
-console.log(`--- 🚀 เริ่มการทดสอบเชื่อมต่อไปที่ ${HOST}:${PORT} ---`);
 
 baseClient.connect(PORT, HOST, () => {
-    console.log('1️⃣ Base Station: กำลังเชื่อมต่อ...');
+    console.log('📡 Base Station (LMB1): กำลังเชื่อมต่อ...');
     baseClient.write(`SOURCE /${BASE_MOUNTPOINT} HTTP/1.0\r\n`);
-    baseClient.write(`Source-Agent: NTRIP Caster Test\r\n`);
+    baseClient.write(`Source-Agent: TestBase/1.0\r\n`);
     baseClient.write(`Icy-Password: ${BASE_PASSWORD}\r\n`);
     baseClient.write(`\r\n`); 
 });
@@ -27,48 +32,55 @@ baseClient.connect(PORT, HOST, () => {
 baseClient.on('data', (data) => {
     const msg = data.toString();
     if (msg.includes('ICY 200 OK')) {
-        console.log('✅ Base Station: Login สำเร็จ!');
+        console.log('✅ Base Station (LMB1): Login สำเร็จ! -> เริ่มส่งข้อมูล...');
         
-        // จำลองส่งข้อมูล RTCM ทุก 1 วินาที
+        // ส่งข้อมูล RTCM หลอกๆ ทุก 1 วินาที (เพื่อให้ Rover มี Data วิ่ง)
         setInterval(() => {
-            if (!baseClient.destroyed) baseClient.write(Buffer.from([0xD3, 0x00, 0x01, 0x02, 0x03])); 
+            if (!baseClient.destroyed) {
+                // ข้อมูล RTCM จำลอง (Header D3 + Len + Data)
+                baseClient.write(Buffer.from([0xD3, 0x00, 0x04, 0x3E, 0x12, 0x34, 0x56])); 
+            }
         }, 1000);
 
-        // เริ่มทดสอบ Rover
-        startRoverTest();
+        // รอ 2 วินาที แล้วเริ่มปล่อย Rover ตัวที่ 1
+        setTimeout(() => startRover('Rover 1', ROVER1_USER, ROVER1_PASS), 2000);
+        
+        // รอ 4 วินาที แล้วเริ่มปล่อย Rover ตัวที่ 2
+        setTimeout(() => startRover('Rover 2', ROVER2_USER, ROVER2_PASS), 4000);
+
     } else {
-        console.log('❌ Base Station: Login ไม่ผ่าน (อาจจะผิดที่ Password หรือ IP)', msg);
+        console.log('❌ Base Station Login ผิดพลาด:', msg);
     }
 });
 
 baseClient.on('error', (err) => console.log('❌ Base Error:', err.message));
 
-// --- 2. จำลอง Rover ---
-function startRoverTest() {
-    setTimeout(() => {
-        const roverClient = new net.Socket();
-        const authStr = Buffer.from(`${ROVER_USER}:${ROVER_PASS}`).toString('base64');
+// --- ฟังก์ชันสร้าง Rover (ใช้ซ้ำได้) ---
+function startRover(label, user, pass) {
+    const client = new net.Socket();
+    const authStr = Buffer.from(`${user}:${pass}`).toString('base64');
 
-        roverClient.connect(PORT, HOST, () => {
-            console.log('2️⃣ Rover: กำลังเชื่อมต่อ...');
-            roverClient.write(`GET /${BASE_MOUNTPOINT} HTTP/1.0\r\n`);
-            roverClient.write(`User-Agent: NTRIP Client Test\r\n`);
-            roverClient.write(`Authorization: Basic ${authStr}\r\n`);
-            roverClient.write(`\r\n`);
-        });
+    console.log(`🚜 ${label} (${user}): กำลังเชื่อมต่อ...`);
+    
+    client.connect(PORT, HOST, () => {
+        client.write(`GET /${BASE_MOUNTPOINT} HTTP/1.0\r\n`);
+        client.write(`User-Agent: NTRIP Client/1.0\r\n`);
+        client.write(`Authorization: Basic ${authStr}\r\n`);
+        client.write(`\r\n`);
+    });
 
-        roverClient.on('data', (data) => {
-            const msg = data.toString();
-            if (msg.includes('ICY 200 OK')) {
-                console.log('✅ Rover: Login สำเร็จ! (เริ่มได้รับข้อมูล Stream แล้ว)');
-            } else if (data.length > 20) {
-                 // ถ้าได้รับข้อมูล RTCM (ไม่ใช่ Text) ถือว่าผ่าน
-                 console.log(`✨ Rover: ได้รับข้อมูล RTCM (${data.length} bytes) <- ระบบสมบูรณ์ 100%`);
-                 process.exit(0);
-            }
-        });
-        
-        roverClient.on('error', (err) => console.log('❌ Rover Error:', err.message));
+    client.on('data', (data) => {
+        const msg = data.toString();
+        if (msg.includes('ICY 200 OK')) {
+            console.log(`✅ ${label} (${user}): Login สำเร็จ! (Online)`);
+        } else if (data.length > 5) {
+            // ได้รับข้อมูล RTCM (แสดงแค่ครั้งเดียวพอเดี๋ยวรก)
+            // console.log(`✨ ${label}: ได้รับข้อมูล ${data.length} bytes`);
+        } else {
+             console.log(`❓ ${label} message:`, msg);
+        }
+    });
 
-    }, 2000); 
+    client.on('close', () => console.log(`🔻 ${label} Disconnected`));
+    client.on('error', (err) => console.log(`❌ ${label} Error:`, err.message));
 }
