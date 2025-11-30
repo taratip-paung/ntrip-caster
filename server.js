@@ -5,16 +5,20 @@ const { Server } = require("socket.io");
 const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcryptjs');
 
-// --- CONFIGURATION ---
-const NTRIP_PORT = 2101;     // Port สำหรับอุปกรณ์ (Base/Rover)
-const WEB_PORT = 3000;       // Port สำหรับหน้าเว็บ Dashboard
-const SALT_ROUNDS = 10;      // ความแรงในการเข้ารหัส Password
+// ==========================================
+// ⚙️ CONFIGURATION
+// ==========================================
+const NTRIP_PORT = 2101;     // Port สำหรับอุปกรณ์ Base/Rover (TCP)
+const WEB_PORT = 3000;       // Port สำหรับหน้าเว็บ (HTTP)
+const SALT_ROUNDS = 10;      // ระดับความปลอดภัยการเข้ารหัส
 
-// --- 1. DATABASE SETUP (SQLite) ---
+// ==========================================
+// 🗄️ DATABASE SETUP (SQLite)
+// ==========================================
 const db = new sqlite3.Database('./data/ntrip.sqlite');
 
 db.serialize(() => {
-    // สร้างตาราง Mountpoints (สำหรับ Base Station)
+    // 1. สร้างตาราง Mountpoints (สำหรับ Base Station)
     db.run(`CREATE TABLE IF NOT EXISTS mountpoints (
         name TEXT PRIMARY KEY, 
         password TEXT, 
@@ -22,7 +26,7 @@ db.serialize(() => {
         lon REAL
     )`);
     
-    // สร้างตาราง Users (สำหรับ Rover)
+    // 2. สร้างตาราง Users (สำหรับ Rover)
     db.run(`CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY, 
         password TEXT, 
@@ -30,51 +34,58 @@ db.serialize(() => {
         allowed_mountpoints TEXT
     )`);
 
-    // --- SEED DATA (ข้อมูลเริ่มต้น) ---
-    // สร้าง Base 'TEST01' / pass: 'password' (ถ้ายังไม่มี)
+    // --- SEED DATA (ข้อมูลตัวอย่าง) ---
+    // สร้าง Base 'TEST01' (Password: password)
     const defaultBasePass = 'password'; 
     db.get("SELECT name FROM mountpoints WHERE name = 'TEST01'", (err, row) => {
         if (!row) {
             const hash = bcrypt.hashSync(defaultBasePass, SALT_ROUNDS);
             db.run("INSERT INTO mountpoints (name, password) VALUES (?, ?)", ['TEST01', hash]);
-            console.log("🔒 Seed: Created Base 'TEST01'");
+            console.log("🔒 Seed DB: Created Base 'TEST01'");
         }
     });
 
-    // สร้าง User 'user1' / pass: '1234' (ถ้ายังไม่มี)
+    // สร้าง User 'user1' (Password: 1234)
     const defaultUserPass = '1234';
     db.get("SELECT username FROM users WHERE username = 'user1'", (err, row) => {
         if (!row) {
             const hash = bcrypt.hashSync(defaultUserPass, SALT_ROUNDS);
             db.run("INSERT INTO users (username, password) VALUES (?, ?)", ['user1', hash]);
-            console.log("🔒 Seed: Created User 'user1'");
+            console.log("🔒 Seed DB: Created User 'user1'");
         }
     });
 });
 
-// --- 2. MEMORY STATE (เก็บสถานะ Online ใน RAM) ---
+// ==========================================
+// 🧠 MEMORY STATE (เก็บสถานะ Online)
+// ==========================================
 const activeMountpoints = new Map(); 
-const activeClients = new Map();     
+// Key: MountpointName
+// Value: { socket, clients: Set(), bytesIn: 0, startTime: Date }
 
-// --- 3. WEB SERVER & API (Express) ---
+const activeClients = new Map();     
+// Key: Socket
+// Value: { username, mountpoint }
+
+// ==========================================
+// 🌐 WEB SERVER & API (Express)
+// ==========================================
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-app.use(express.static('public')); // อ่านไฟล์หน้าเว็บ
-app.use(express.json());           // รองรับ JSON
+app.use(express.static('public')); // โฟลเดอร์หน้าเว็บ
+app.use(express.json());           // รองรับ JSON Payload
 
-// === API ROUTES ===
-
-// 1. Status API (ปรับปรุงใหม่ ให้แสดงรายการเป็นคู่ๆ สำหรับตาราง)
+// --- API 1: Status Dashboard (Logic แยกคู่ Base-Rover) ---
 app.get('/api/status', (req, res) => {
     const connectionList = [];
 
-    // วนลูป Base Station ทั้งหมดที่ออนไลน์
+    // วนลูปดู Base Station ทุกตัว
     activeMountpoints.forEach((mpData, mpName) => {
         const uptime = Math.floor((Date.now() - mpData.startTime) / 1000);
         
-        // กรณีที่ 1: Base ออนไลน์ แต่ไม่มี Rover เกาะ -> สร้างแถวรอ
+        // ถ้า Base ไม่มี Rover เกาะ
         if (mpData.clients.size === 0) {
             connectionList.push({
                 mountpoint: mpName,
@@ -84,7 +95,7 @@ app.get('/api/status', (req, res) => {
                 status: 'WAITING'
             });
         } else {
-            // กรณีที่ 2: มี Rover เกาะ -> สร้างแถวตามจำนวน Rover
+            // ถ้ามี Rover เกาะ ให้แตกรายการออกมา
             mpData.clients.forEach(clientSocket => {
                 const clientInfo = activeClients.get(clientSocket);
                 connectionList.push({
@@ -105,7 +116,7 @@ app.get('/api/status', (req, res) => {
     });
 });
 
-// 2. Mountpoints CRUD
+// --- API 2: Manage Mountpoints (Base Stations) ---
 app.get('/api/mountpoints', (req, res) => {
     db.all("SELECT name FROM mountpoints", [], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -121,7 +132,7 @@ app.post('/api/mountpoints', (req, res) => {
     db.run("INSERT INTO mountpoints (name, password) VALUES (?, ?)", [name, hash], function(err) {
         if (err) return res.status(500).json({ error: "Name exists or DB error" });
         res.json({ message: "Success", id: this.lastID });
-        console.log(`📝 Base [${name}] added via Web`);
+        console.log(`📝 Added Base Station: ${name}`);
     });
 });
 
@@ -130,11 +141,11 @@ app.delete('/api/mountpoints/:name', (req, res) => {
     db.run("DELETE FROM mountpoints WHERE name = ?", [name], function(err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: "Deleted" });
-        console.log(`🗑️ Base [${name}] deleted via Web`);
+        console.log(`🗑️ Deleted Base Station: ${name}`);
     });
 });
 
-// 3. Users CRUD
+// --- API 3: Manage Users (Rovers) ---
 app.get('/api/users', (req, res) => {
     db.all("SELECT username FROM users", [], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -150,7 +161,7 @@ app.post('/api/users', (req, res) => {
     db.run("INSERT INTO users (username, password) VALUES (?, ?)", [username, hash], function(err) {
         if (err) return res.status(500).json({ error: "User exists or DB error" });
         res.json({ message: "Success", id: this.lastID });
-        console.log(`📝 User [${username}] added via Web`);
+        console.log(`📝 Added User: ${username}`);
     });
 });
 
@@ -159,7 +170,7 @@ app.delete('/api/users/:username', (req, res) => {
     db.run("DELETE FROM users WHERE username = ?", [username], function(err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: "Deleted" });
-        console.log(`🗑️ User [${username}] deleted via Web`);
+        console.log(`🗑️ Deleted User: ${username}`);
     });
 });
 
@@ -167,41 +178,67 @@ server.listen(WEB_PORT, () => {
     console.log(`🌐 Web Dashboard running on port ${WEB_PORT}`);
 });
 
-// --- 4. NTRIP CASTER SERVER (TCP Logic) ---
+// ==========================================
+// 📡 NTRIP CASTER SERVER (TCP)
+// ==========================================
 const ntripServer = net.createServer((socket) => {
     let isAuthenticated = false;
-    let mode = ''; 
+    let mode = ''; // 'SOURCE' or 'CLIENT'
     let buffer = Buffer.alloc(0);
 
     socket.on('data', (data) => {
+        // ถ้าล็อกอินแล้ว ให้ทำงานตามหน้าที่ทันที (เพื่อความเร็ว)
         if (isAuthenticated) {
             if (mode === 'SOURCE') handleSourceData(socket, data);
             return;
         }
 
+        // ถ้ายังไม่ล็อกอิน ให้เก็บข้อมูลใส่ Buffer เพื่อรออ่าน Header
         buffer = Buffer.concat([buffer, data]);
         const headerEnd = buffer.indexOf('\r\n\r\n');
         
         if (headerEnd !== -1) {
             const headerStr = buffer.slice(0, headerEnd).toString();
             const remainingData = buffer.slice(headerEnd + 4);
-            buffer = Buffer.alloc(0); 
+            buffer = Buffer.alloc(0); // เคลียร์ Buffer
+            
+            // เรียกฟังก์ชันตรวจสอบสิทธิ์
             processHandshake(socket, headerStr, remainingData);
         }
     });
 
-    socket.on('error', () => {});
+    socket.on('error', (err) => { /* console.error('Socket error:', err.message); */ });
     socket.on('close', () => cleanupConnection(socket));
 });
 
-// ฟังก์ชันตรวจสอบสิทธิ์ (Handshake) - **สำคัญ: รองรับทั้ง Icy-Password และ Basic Auth**
+// --- ฟังก์ชันตรวจสอบสิทธิ์ (หัวใจสำคัญ) ---
 function processHandshake(socket, header, firstDataChunk) {
     const lines = header.split('\r\n');
-    const requestLine = lines[0].split(' ');
+    // ใช้ regex \s+ เพื่อรองรับช่องว่างหลายตัว (ป้องกัน Error จาก Client บางตัว)
+    const requestLine = lines[0].split(/\s+/); 
     const method = requestLine[0]; // SOURCE หรือ GET
-    const mountpoint = requestLine[1].replace('/', '');
+    
+    let mountpoint = '';
+    let passwordFromHeader = ''; // เก็บ Password กรณี RTKLIB ส่งมาบรรทัดแรก
 
-    // Helper: แกะ Basic Auth
+    // === ตรวจสอบรูปแบบ Header ===
+    if (method === 'SOURCE') {
+        // เช็ค Format ของ RTKLIB (NTRIP 1.0): SOURCE [PASSWORD] /[MOUNTPOINT]
+        // เช่น: "SOURCE 1234 /MMB3"
+        if (requestLine.length >= 3 && !requestLine[1].startsWith('/')) {
+             passwordFromHeader = requestLine[1];
+             mountpoint = requestLine[2].replace('/', '');
+             console.log(`🔍 Detect RTKLIB format: Pass=${passwordFromHeader}, Mount=${mountpoint}`);
+        } else {
+             // Standard Format (NTRIP 2.0): SOURCE /MMB3 HTTP/1.0
+             mountpoint = requestLine[1].replace('/', '');
+        }
+    } else {
+        // GET (Rover)
+        mountpoint = requestLine[1].replace('/', '');
+    }
+
+    // Helper: ฟังก์ชันแกะ Basic Auth (Authorization: Basic base64...)
     const parseBasicAuth = (lines) => {
         const authLine = lines.find(l => l.toLowerCase().startsWith('authorization: basic'));
         if (!authLine) return null;
@@ -210,28 +247,30 @@ function processHandshake(socket, header, firstDataChunk) {
         return { user: decoded[0], pass: decoded[1] };
     };
 
-    // === BASE STATION CONNECTING ===
+    // === กรณี Base Station (SOURCE) ===
     if (method === 'SOURCE') {
-        let password = '';
+        let password = passwordFromHeader; // ลองใช้รหัสจากบรรทัดแรกก่อน
         
-        // 1. ลองหา Icy-Password (NTRIP 1.0)
-        const icyLine = lines.find(l => l.toLowerCase().startsWith('icy-password:'));
-        if (icyLine) {
-            password = icyLine.split(':')[1].trim();
-        } 
-        // 2. ถ้าไม่มี ลองหา Basic Auth (RTKLIB / NTRIP 2.0)
-        else {
+        // ถ้าไม่มีในบรรทัดแรก ลองหา Icy-Password (NTRIP 1.0 แบบมาตรฐาน)
+        if (!password) {
+            const icyLine = lines.find(l => l.toLowerCase().startsWith('icy-password:'));
+            if (icyLine) password = icyLine.split(':')[1].trim();
+        }
+        // ถ้ายังไม่มี ลองหา Basic Auth (NTRIP 2.0)
+        if (!password) {
             const authData = parseBasicAuth(lines);
             if (authData) password = authData.pass; 
         }
 
         db.get("SELECT * FROM mountpoints WHERE name = ?", [mountpoint], (err, row) => {
             if (row && bcrypt.compareSync(password, row.password)) {
+                // ตอบกลับว่าผ่าน
                 socket.write('ICY 200 OK\r\n\r\n');
                 isAuthenticated = true;
                 mode = 'SOURCE';
                 socket.mountpointName = mountpoint;
                 
+                // เก็บสถานะ
                 activeMountpoints.set(mountpoint, { 
                     socket: socket, 
                     clients: new Set(), 
@@ -240,15 +279,17 @@ function processHandshake(socket, header, firstDataChunk) {
                 });
                 
                 console.log(`✅ Base Station [${mountpoint}] Connected`);
+                
+                // ถ้ามีข้อมูล RTCM ติดมากับ Packet แรก ให้ส่งต่อเลย
                 if (firstDataChunk.length > 0) handleSourceData(socket, firstDataChunk);
             } else {
-                console.log(`⛔ Login Failed: Base [${mountpoint}]`);
+                console.log(`⛔ Login Failed: Base [${mountpoint}] (Received Pass: ${password})`);
                 socket.write('ERROR - Bad Password\r\n');
                 socket.end();
             }
         });
     }
-    // === ROVER CONNECTING ===
+    // === กรณี Rover (GET) ===
     else if (method === 'GET') {
         const authData = parseBasicAuth(lines);
         
@@ -263,17 +304,20 @@ function processHandshake(socket, header, firstDataChunk) {
         db.get("SELECT * FROM users WHERE username = ?", [user], (err, row) => {
             if (row && bcrypt.compareSync(pass, row.password)) {
                 if (activeMountpoints.has(mountpoint)) {
+                    // ตอบกลับว่าผ่าน
                     socket.write('ICY 200 OK\r\n\r\n');
                     isAuthenticated = true;
                     mode = 'CLIENT';
                     socket.username = user;
                     
+                    // เพิ่ม Rover เข้าไปใน List ของ Base นั้น
                     const mp = activeMountpoints.get(mountpoint);
                     mp.clients.add(socket);
                     activeClients.set(socket, { username: user, mountpoint: mountpoint });
                     
                     console.log(`📡 Rover [${user}] connected to [${mountpoint}]`);
                 } else {
+                    console.log(`⚠️ Rover [${user}] requested unknown mountpoint: ${mountpoint}`);
                     socket.write('ERROR - Mountpoint not available\r\n');
                     socket.end();
                 }
@@ -286,6 +330,7 @@ function processHandshake(socket, header, firstDataChunk) {
     }
 }
 
+// ฟังก์ชันส่งข้อมูลจาก Base -> Rover (Broadcast)
 function handleSourceData(socket, data) {
     const mpName = socket.mountpointName;
     const mp = activeMountpoints.get(mpName);
@@ -293,28 +338,38 @@ function handleSourceData(socket, data) {
         mp.bytesIn += data.length;
         if (mp.clients) {
             mp.clients.forEach(clientSocket => {
+                // ต้องเช็คว่า Client ยังไม่หลุด ถึงจะส่งข้อมูลได้
                 if (!clientSocket.destroyed) clientSocket.write(data);
             });
         }
     }
 }
 
+// ฟังก์ชันเคลียร์ข้อมูลเมื่อหลุด
 function cleanupConnection(socket) {
+    // กรณี Base หลุด
     if (socket.mountpointName) {
         console.log(`❌ Base Station [${socket.mountpointName}] Disconnected`);
         const mp = activeMountpoints.get(socket.mountpointName);
+        
+        // เตะ Rover ทั้งหมดออก (Optional: หรือจะปล่อยรอไว้ก็ได้)
         if (mp && mp.clients) mp.clients.forEach(c => c.end());
+        
         activeMountpoints.delete(socket.mountpointName);
     }
+    // กรณี Rover หลุด
     if (activeClients.has(socket)) {
         const info = activeClients.get(socket);
         console.log(`❌ Rover [${info.username}] Disconnected`);
+        
         const mp = activeMountpoints.get(info.mountpoint);
         if (mp) mp.clients.delete(socket);
+        
         activeClients.delete(socket);
     }
 }
 
+// เริ่มต้น NTRIP Server
 ntripServer.listen(NTRIP_PORT, () => {
     console.log(`🚀 NTRIP Caster running on port ${NTRIP_PORT}`);
 });
