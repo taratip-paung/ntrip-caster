@@ -19,8 +19,12 @@
             <nav class="tabs is-boxed is-fullwidth">
                 <div class="container">
                     <ul>
-                        <li class="is-active" id="tab-dashboard" onclick="switchTab('dashboard')"><a>📊 Dashboard & Map</a></li>
-                        <li id="tab-settings" onclick="switchTab('settings')"><a>⚙️ Management</a></li>
+                        <li class="is-active" id="tab-dashboard" onclick="switchTab('dashboard')">
+                            <a>📊 Dashboard (Live)</a>
+                        </li>
+                        <li id="tab-settings" onclick="switchTab('settings')">
+                            <a>⚙️ Management (Database)</a>
+                        </li>
                     </ul>
                 </div>
             </nav>
@@ -31,13 +35,13 @@
         <div class="columns">
             <div class="column is-4">
                 <div class="box">
-                    <h3 class="title is-5">สถานะระบบ</h3>
+                    <h3 class="title is-5">สถานะระบบ (Real-time)</h3>
                     <div class="level">
                         <div class="level-item has-text-centered">
-                            <div><p class="heading">Base Stations</p><p class="title" id="base-count">0</p></div>
+                            <div><p class="heading">Online Base</p><p class="title" id="base-count">0</p></div>
                         </div>
                         <div class="level-item has-text-centered">
-                            <div><p class="heading">Active Rovers</p><p class="title" id="rover-count">0</p></div>
+                            <div><p class="heading">Online Rovers</p><p class="title" id="rover-count">0</p></div>
                         </div>
                     </div>
                 </div>
@@ -45,7 +49,8 @@
                     <h3 class="title is-6">Live Connections</h3>
                     <table class="table is-fullwidth is-striped is-narrow">
                         <thead><tr><th>Base Name</th><th>Clients</th><th>Data</th></tr></thead>
-                        <tbody id="mp-table"></tbody>
+                        <tbody id="mp-table">
+                            </tbody>
                     </table>
                 </div>
             </div>
@@ -59,32 +64,53 @@
 
     <div id="content-settings" class="container mt-5" style="display: none;">
         <div class="columns">
+            
             <div class="column is-6">
                 <div class="box">
-                    <h3 class="title is-5">🗼 Base Stations (Mountpoints)</h3>
+                    <h3 class="title is-5 has-text-info">🗼 Registered Base Stations</h3>
+                    <p class="help mb-3">รายชื่อ Base Station ทั้งหมดในระบบ</p>
+                    
                     <div class="field has-addons">
-                        <div class="control"><input class="input" type="text" id="new-mp-name" placeholder="Name (e.g. BKK01)"></div>
-                        <div class="control"><input class="input" type="text" id="new-mp-pass" placeholder="Password"></div>
-                        <div class="control"><button class="button is-info" onclick="addMountpoint()">Add</button></div>
+                        <div class="control is-expanded">
+                            <input class="input" type="text" id="new-mp-name" placeholder="ชื่อ Mountpoint (เช่น BKK01)">
+                        </div>
+                        <div class="control is-expanded">
+                            <input class="input" type="text" id="new-mp-pass" placeholder="รหัสผ่าน">
+                        </div>
+                        <div class="control">
+                            <button class="button is-info" onclick="addMountpoint()">Add</button>
+                        </div>
                     </div>
-                    <table class="table is-fullwidth is-hoverable">
-                        <thead><tr><th>Name</th><th>Action</th></tr></thead>
-                        <tbody id="list-mountpoints"></tbody>
+
+                    <table class="table is-fullwidth is-hoverable is-bordered">
+                        <thead><tr><th>Mountpoint Name</th><th style="width: 100px;">Action</th></tr></thead>
+                        <tbody id="list-mountpoints">
+                            </tbody>
                     </table>
                 </div>
             </div>
 
             <div class="column is-6">
                 <div class="box">
-                    <h3 class="title is-5">🚜 Rovers (Users)</h3>
+                    <h3 class="title is-5 has-text-success">🚜 Registered Rovers</h3>
+                    <p class="help mb-3">รายชื่อ User/Rover ทั้งหมดในระบบ</p>
+
                     <div class="field has-addons">
-                        <div class="control"><input class="input" type="text" id="new-user-name" placeholder="Username"></div>
-                        <div class="control"><input class="input" type="text" id="new-user-pass" placeholder="Password"></div>
-                        <div class="control"><button class="button is-success" onclick="addUser()">Add</button></div>
+                        <div class="control is-expanded">
+                            <input class="input" type="text" id="new-user-name" placeholder="Username (เช่น user01)">
+                        </div>
+                        <div class="control is-expanded">
+                            <input class="input" type="text" id="new-user-pass" placeholder="รหัสผ่าน">
+                        </div>
+                        <div class="control">
+                            <button class="button is-success" onclick="addUser()">Add</button>
+                        </div>
                     </div>
-                    <table class="table is-fullwidth is-hoverable">
-                        <thead><tr><th>Username</th><th>Action</th></tr></thead>
-                        <tbody id="list-users"></tbody>
+
+                    <table class="table is-fullwidth is-hoverable is-bordered">
+                        <thead><tr><th>Username</th><th style="width: 100px;">Action</th></tr></thead>
+                        <tbody id="list-users">
+                            </tbody>
                     </table>
                 </div>
             </div>
