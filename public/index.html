@@ -2,7 +2,8 @@
 <html lang="th">
 <head>
     <meta charset="UTF-8">
-    <title>NTRIP Admin</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NTRIP Admin Panel</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="style.css">
@@ -33,30 +34,40 @@
 
     <div id="content-dashboard" class="container mt-5">
         <div class="columns">
-            <div class="column is-4">
+            <div class="column is-5">
                 <div class="box">
                     <h3 class="title is-5">สถานะระบบ (Real-time)</h3>
-                    <div class="level">
+                    <div class="level is-mobile">
                         <div class="level-item has-text-centered">
-                            <div><p class="heading">Online Base</p><p class="title" id="base-count">0</p></div>
+                            <div><p class="heading">Online Base</p><p class="title has-text-success" id="base-count">0</p></div>
                         </div>
                         <div class="level-item has-text-centered">
-                            <div><p class="heading">Online Rovers</p><p class="title" id="rover-count">0</p></div>
+                            <div><p class="heading">Online Rovers</p><p class="title has-text-info" id="rover-count">0</p></div>
                         </div>
                     </div>
                 </div>
+
                 <div class="box">
-                    <h3 class="title is-6">Live Connections</h3>
-                    <table class="table is-fullwidth is-striped is-narrow">
-                        <thead><tr><th>Base Name</th><th>Clients</th><th>Data</th></tr></thead>
-                        <tbody id="mp-table">
-                            </tbody>
-                    </table>
+                    <h3 class="title is-6">Live Connections (คู่สาย)</h3>
+                    <div class="table-container">
+                        <table class="table is-fullwidth is-striped is-narrow is-hoverable">
+                            <thead>
+                                <tr>
+                                    <th>Base Station</th>
+                                    <th>Connected Rover</th>
+                                    <th>Data</th>
+                                </tr>
+                            </thead>
+                            <tbody id="mp-table">
+                                </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
-            <div class="column is-8">
-                <div class="box" style="height: 100%;">
-                    <div id="map"></div>
+
+            <div class="column is-7">
+                <div class="box" style="height: 100%; min-height: 500px;">
+                    <div id="map" style="height: 100%; min-height: 480px; width: 100%;"></div>
                 </div>
             </div>
         </div>
@@ -67,8 +78,8 @@
             
             <div class="column is-6">
                 <div class="box">
-                    <h3 class="title is-5 has-text-info">🗼 Registered Base Stations</h3>
-                    <p class="help mb-3">รายชื่อ Base Station ทั้งหมดในระบบ</p>
+                    <h3 class="title is-5 has-text-success">🗼 Registered Base Stations</h3>
+                    <p class="help mb-3">รายชื่อ Base Station ที่ลงทะเบียนไว้ใน Database</p>
                     
                     <div class="field has-addons">
                         <div class="control is-expanded">
@@ -78,22 +89,21 @@
                             <input class="input" type="text" id="new-mp-pass" placeholder="รหัสผ่าน">
                         </div>
                         <div class="control">
-                            <button class="button is-info" onclick="addMountpoint()">Add</button>
+                            <button class="button is-success" onclick="addMountpoint()">Add</button>
                         </div>
                     </div>
 
                     <table class="table is-fullwidth is-hoverable is-bordered">
                         <thead><tr><th>Mountpoint Name</th><th style="width: 100px;">Action</th></tr></thead>
-                        <tbody id="list-mountpoints">
-                            </tbody>
+                        <tbody id="list-mountpoints"></tbody>
                     </table>
                 </div>
             </div>
 
             <div class="column is-6">
                 <div class="box">
-                    <h3 class="title is-5 has-text-success">🚜 Registered Rovers</h3>
-                    <p class="help mb-3">รายชื่อ User/Rover ทั้งหมดในระบบ</p>
+                    <h3 class="title is-5 has-text-info">🚜 Registered Rovers</h3>
+                    <p class="help mb-3">รายชื่อ User (Rover) ที่ลงทะเบียนไว้ใน Database</p>
 
                     <div class="field has-addons">
                         <div class="control is-expanded">
@@ -103,14 +113,13 @@
                             <input class="input" type="text" id="new-user-pass" placeholder="รหัสผ่าน">
                         </div>
                         <div class="control">
-                            <button class="button is-success" onclick="addUser()">Add</button>
+                            <button class="button is-info" onclick="addUser()">Add</button>
                         </div>
                     </div>
 
                     <table class="table is-fullwidth is-hoverable is-bordered">
                         <thead><tr><th>Username</th><th style="width: 100px;">Action</th></tr></thead>
-                        <tbody id="list-users">
-                            </tbody>
+                        <tbody id="list-users"></tbody>
                     </table>
                 </div>
             </div>

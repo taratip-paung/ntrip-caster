@@ -1,106 +1,112 @@
-// --- MAP SETUP ---
-const map = L.map('map').setView([13.7563, 100.5018], 6);
+// --- 1. MAP SETUP (ตั้งค่าแผนที่) ---
+const map = L.map('map').setView([13.7563, 100.5018], 6); // พิกัดกลางประเทศไทย
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap contributors'
 }).addTo(map);
 
-// --- DASHBOARD LOGIC (Live Status) ---
+// --- 2. DASHBOARD LOGIC (ทำงานอัตโนมัติ) ---
 function updateDashboard() {
-    // ถ้าไม่อยู่หน้า Dashboard ไม่ต้องโหลด (ประหยัด Resource)
+    // เช็คว่าเปิดหน้า Dashboard อยู่ไหม (ถ้าปิดอยู่ไม่ต้องโหลด เพื่อประหยัดเน็ต)
     const dashboardTab = document.getElementById('content-dashboard');
     if (!dashboardTab || dashboardTab.style.display === 'none') return;
 
     fetch('/api/status')
         .then(res => res.json())
         .then(data => {
-            document.getElementById('base-count').innerText = data.mountpoints.length;
+            // อัปเดตตัวเลขสรุป
+            document.getElementById('base-count').innerText = data.totalBases;
             document.getElementById('rover-count').innerText = data.totalRovers;
 
             const tbody = document.getElementById('mp-table');
             tbody.innerHTML = '';
             
-            if (data.mountpoints.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="3" class="has-text-centered has-text-grey is-size-7">Waiting for connections...</td></tr>';
+            // แสดงรายการในตาราง
+            if (data.connections.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="3" class="has-text-centered has-text-grey is-size-7 p-4">... รอการเชื่อมต่อ ...</td></tr>';
             } else {
-                data.mountpoints.forEach(mp => {
-                    const kb = (mp.bytesIn / 1024).toFixed(1);
+                data.connections.forEach(conn => {
+                    const kb = (conn.bytesIn / 1024).toFixed(1);
+                    
+                    // ตกแต่ง: ถ้าไม่มี Rover ให้แสดงเป็นตัวหนังสือสีจางๆ
+                    let roverDisplay = '';
+                    if (conn.rover === '-') {
+                        roverDisplay = '<span class="has-text-grey-light is-size-7">Waiting...</span>';
+                    } else {
+                        roverDisplay = `👤 <strong>${conn.rover}</strong>`;
+                    }
+
+                    // สร้างแถวตาราง
                     tbody.innerHTML += `
                         <tr>
-                            <td><span class="tag is-success is-light">🟢 ${mp.name}</span></td>
-                            <td>${mp.clients} 👤</td>
+                            <td><span class="tag is-success is-light">🟢 ${conn.mountpoint}</span></td>
+                            <td>${roverDisplay}</td>
                             <td>${kb} KB</td>
                         </tr>
                     `;
                 });
             }
         })
-        .catch(err => console.error(err));
+        .catch(err => console.error("API Error:", err));
 }
 
-// อัปเดตสถานะทุก 2 วินาที
+// สั่งให้อัปเดตทุก 2 วินาที
 setInterval(updateDashboard, 2000);
 
 
-// --- TAB SWITCHING LOGIC ---
+// --- 3. TAB LOGIC (สลับหน้าจอ) ---
 function switchTab(tabName) {
-    // 1. ซ่อนเนื้อหาทั้งหมดก่อน
+    // ซ่อนเนื้อหาทั้งหมดก่อน
     document.getElementById('content-dashboard').style.display = 'none';
     document.getElementById('content-settings').style.display = 'none';
     
-    // 2. เอา Active class ออกจากปุ่ม
+    // เอาขีดเส้นใต้ Active ออกจากเมนู
     document.getElementById('tab-dashboard').classList.remove('is-active');
     document.getElementById('tab-settings').classList.remove('is-active');
 
-    // 3. แสดงเฉพาะหน้าที่เลือก
+    // แสดงหน้าที่เลือก
     document.getElementById('content-' + tabName).style.display = 'block';
     document.getElementById('tab-' + tabName).classList.add('is-active');
 
-    // 4. โหลดข้อมูลตามหน้า
+    // โหลดข้อมูลตามหน้าที่เข้า
     if (tabName === 'settings') {
-        // ถ้าเข้าหน้า Settings ให้ดึงข้อมูลจาก Database มาโชว์ทันที
         loadMountpoints();
         loadUsers();
     } else {
-        // ถ้ากลับมาหน้า Dashboard ให้โหลดสถานะล่าสุด และแก้บั๊กแผนที่
         updateDashboard();
+        // แก้บั๊กแผนที่ Leaflet (โหลดแมพใหม่เมื่อกลับมาหน้านี้)
         setTimeout(() => map.invalidateSize(), 100); 
     }
 }
 
 
-// --- MANAGEMENT LOGIC (CRUD) ---
+// --- 4. MANAGEMENT LOGIC (จัดการ Database) ---
 
-// 1. โหลดรายชื่อ Base Station
+// === Base Station (Mountpoints) ===
 function loadMountpoints() {
     fetch('/api/mountpoints')
         .then(r => r.json())
         .then(rows => {
             const tbody = document.getElementById('list-mountpoints');
             tbody.innerHTML = '';
-            
             if (rows.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="2" class="has-text-centered has-text-grey">ไม่มีข้อมูล</td></tr>';
                 return;
             }
-
             rows.forEach(row => {
                 tbody.innerHTML += `
                     <tr>
                         <td><strong>${row.name}</strong></td>
                         <td>
-                            <button class="button is-small is-danger is-light" onclick="delMountpoint('${row.name}')">
-                                Delete
-                            </button>
+                            <button class="button is-small is-danger is-light" onclick="delMountpoint('${row.name}')">Delete</button>
                         </td>
                     </tr>`;
             });
         });
 }
 
-// 2. เพิ่ม Base Station
 function addMountpoint() {
-    const name = document.getElementById('new-mp-name').value;
-    const pass = document.getElementById('new-mp-pass').value;
+    const name = document.getElementById('new-mp-name').value.trim();
+    const pass = document.getElementById('new-mp-pass').value.trim();
     if(!name || !pass) return alert("กรุณากรอกข้อมูลให้ครบ");
 
     fetch('/api/mountpoints', {
@@ -108,55 +114,46 @@ function addMountpoint() {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ name: name, password: pass })
     }).then(res => res.json()).then(data => {
-        if(data.error) {
-            alert("เกิดข้อผิดพลาด: " + data.error);
-        } else {
-            // เคลียร์ช่องกรอก และโหลดรายการใหม่
+        if(data.error) alert(data.error);
+        else {
             document.getElementById('new-mp-name').value = '';
             document.getElementById('new-mp-pass').value = '';
-            loadMountpoints(); 
+            loadMountpoints();
         }
     });
 }
 
-// 3. ลบ Base Station
 function delMountpoint(name) {
-    if(!confirm(`ยืนยันการลบ Base Station: ${name}?`)) return;
-    fetch('/api/mountpoints/' + name, { method: 'DELETE' })
-        .then(() => loadMountpoints());
+    if(!confirm(`ต้องการลบ Base Station: ${name} ใช่หรือไม่?`)) return;
+    fetch('/api/mountpoints/' + name, { method: 'DELETE' }).then(() => loadMountpoints());
 }
 
-// 4. โหลดรายชื่อ Rover Users
+// === Rover (Users) ===
 function loadUsers() {
     fetch('/api/users')
         .then(r => r.json())
         .then(rows => {
             const tbody = document.getElementById('list-users');
             tbody.innerHTML = '';
-
             if (rows.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="2" class="has-text-centered has-text-grey">ไม่มีข้อมูล</td></tr>';
                 return;
             }
-
             rows.forEach(row => {
                 tbody.innerHTML += `
                     <tr>
                         <td>👤 ${row.username}</td>
                         <td>
-                            <button class="button is-small is-danger is-light" onclick="delUser('${row.username}')">
-                                Delete
-                            </button>
+                            <button class="button is-small is-danger is-light" onclick="delUser('${row.username}')">Delete</button>
                         </td>
                     </tr>`;
             });
         });
 }
 
-// 5. เพิ่ม Rover User
 function addUser() {
-    const user = document.getElementById('new-user-name').value;
-    const pass = document.getElementById('new-user-pass').value;
+    const user = document.getElementById('new-user-name').value.trim();
+    const pass = document.getElementById('new-user-pass').value.trim();
     if(!user || !pass) return alert("กรุณากรอกข้อมูลให้ครบ");
 
     fetch('/api/users', {
@@ -164,10 +161,8 @@ function addUser() {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ username: user, password: pass })
     }).then(res => res.json()).then(data => {
-        if(data.error) {
-            alert("เกิดข้อผิดพลาด: " + data.error);
-        } else {
-            // เคลียร์ช่องกรอก และโหลดรายการใหม่
+        if(data.error) alert(data.error);
+        else {
             document.getElementById('new-user-name').value = '';
             document.getElementById('new-user-pass').value = '';
             loadUsers();
@@ -175,12 +170,10 @@ function addUser() {
     });
 }
 
-// 6. ลบ Rover User
 function delUser(username) {
-    if(!confirm(`ยืนยันการลบ User: ${username}?`)) return;
-    fetch('/api/users/' + username, { method: 'DELETE' })
-        .then(() => loadUsers());
+    if(!confirm(`ต้องการลบ User: ${username} ใช่หรือไม่?`)) return;
+    fetch('/api/users/' + username, { method: 'DELETE' }).then(() => loadUsers());
 }
 
-// เริ่มต้นทำงาน (โหลดหน้า Dashboard)
+// เริ่มต้นทำงานทันทีเมื่อโหลดเสร็จ
 updateDashboard();

@@ -5,11 +5,11 @@ const HOST = '192.168.1.100';
 const PORT = 2101;
 
 // ข้อมูลจำลอง Base Station (รหัส: password)
-const BASE_MOUNTPOINT = 'TEST01';
-const BASE_PASSWORD = 'password';
+const BASE_MOUNTPOINT = 'LMB1';
+const BASE_PASSWORD = '1234';
 
 // ข้อมูลจำลอง Rover (รหัส: 1234)
-const ROVER_USER = 'user1';
+const ROVER_USER = 'LMR1';
 const ROVER_PASS = '1234'; 
 
 // --- 1. จำลอง Base Station ---
