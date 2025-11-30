@@ -2,53 +2,90 @@
 <html lang="th">
 <head>
     <meta charset="UTF-8">
-    <title>NTRIP Caster Dashboard</title>
+    <title>NTRIP Admin</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
-    <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <section class="hero is-info is-small">
         <div class="hero-body">
-            <p class="title">📡 NTRIP Admin</p>
-            <p class="subtitle">IP: 192.168.1.100</p>
+            <div class="container">
+                <p class="title">📡 NTRIP Caster Manager</p>
+                <p class="subtitle">System Control Center</p>
+            </div>
+        </div>
+        <div class="hero-foot">
+            <nav class="tabs is-boxed is-fullwidth">
+                <div class="container">
+                    <ul>
+                        <li class="is-active" id="tab-dashboard" onclick="switchTab('dashboard')"><a>📊 Dashboard & Map</a></li>
+                        <li id="tab-settings" onclick="switchTab('settings')"><a>⚙️ Management</a></li>
+                    </ul>
+                </div>
+            </nav>
         </div>
     </section>
 
-    <div class="container mt-5">
+    <div id="content-dashboard" class="container mt-5">
         <div class="columns">
             <div class="column is-4">
                 <div class="box">
                     <h3 class="title is-5">สถานะระบบ</h3>
                     <div class="level">
                         <div class="level-item has-text-centered">
-                            <div>
-                                <p class="heading">Base Stations</p>
-                                <p class="title" id="base-count">0</p>
-                            </div>
+                            <div><p class="heading">Base Stations</p><p class="title" id="base-count">0</p></div>
                         </div>
                         <div class="level-item has-text-centered">
-                            <div>
-                                <p class="heading">Active Rovers</p>
-                                <p class="title" id="rover-count">0</p>
-                            </div>
+                            <div><p class="heading">Active Rovers</p><p class="title" id="rover-count">0</p></div>
                         </div>
                     </div>
                 </div>
-                
                 <div class="box">
-                    <h3 class="title is-6">Base Stations Online</h3>
-                    <table class="table is-fullwidth is-striped">
-                        <thead><tr><th>Name</th><th>Clients</th><th>Data (KB)</th></tr></thead>
+                    <h3 class="title is-6">Live Connections</h3>
+                    <table class="table is-fullwidth is-striped is-narrow">
+                        <thead><tr><th>Base Name</th><th>Clients</th><th>Data</th></tr></thead>
                         <tbody id="mp-table"></tbody>
                     </table>
                 </div>
             </div>
-
             <div class="column is-8">
                 <div class="box" style="height: 100%;">
-                    <h3 class="title is-5">แผนที่ตำแหน่ง (Live Map)</h3>
                     <div id="map"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="content-settings" class="container mt-5" style="display: none;">
+        <div class="columns">
+            <div class="column is-6">
+                <div class="box">
+                    <h3 class="title is-5">🗼 Base Stations (Mountpoints)</h3>
+                    <div class="field has-addons">
+                        <div class="control"><input class="input" type="text" id="new-mp-name" placeholder="Name (e.g. BKK01)"></div>
+                        <div class="control"><input class="input" type="text" id="new-mp-pass" placeholder="Password"></div>
+                        <div class="control"><button class="button is-info" onclick="addMountpoint()">Add</button></div>
+                    </div>
+                    <table class="table is-fullwidth is-hoverable">
+                        <thead><tr><th>Name</th><th>Action</th></tr></thead>
+                        <tbody id="list-mountpoints"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="column is-6">
+                <div class="box">
+                    <h3 class="title is-5">🚜 Rovers (Users)</h3>
+                    <div class="field has-addons">
+                        <div class="control"><input class="input" type="text" id="new-user-name" placeholder="Username"></div>
+                        <div class="control"><input class="input" type="text" id="new-user-pass" placeholder="Password"></div>
+                        <div class="control"><button class="button is-success" onclick="addUser()">Add</button></div>
+                    </div>
+                    <table class="table is-fullwidth is-hoverable">
+                        <thead><tr><th>Username</th><th>Action</th></tr></thead>
+                        <tbody id="list-users"></tbody>
+                    </table>
                 </div>
             </div>
         </div>
