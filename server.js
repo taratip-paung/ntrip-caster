@@ -62,17 +62,18 @@ app.get('/api/status', (req, res) => {
             connectionList.push({ 
                 mountpoint: mpName, 
                 rover: '-', 
-                bytesIn: mpData.bytesIn || 0, 
+                bytesIn: 0, 
                 uptime: uptime, 
                 status: 'WAITING' 
             });
         } else {
             mpData.clients.forEach(clientSocket => {
                 const clientInfo = activeClients.get(clientSocket);
+                const roverBytes = clientInfo ? (clientInfo.bytesReceived || 0) : 0;
                 connectionList.push({ 
                     mountpoint: mpName, 
                     rover: clientInfo ? clientInfo.username : 'Unknown', 
-                    bytesIn: mpData.bytesIn || 0, 
+                    bytesIn: roverBytes, 
                     uptime: uptime, 
                     status: 'CONNECTED' 
                 });
@@ -384,7 +385,12 @@ function processHandshake(socket, header, firstDataChunk, socketId, setAuthentic
                     socket.socketId = socketId;
                     const mp = activeMountpoints.get(mountpoint);
                     mp.clients.add(socket);
-                    activeClients.set(socket, { username: user, mountpoint: mountpoint });
+                    activeClients.set(socket, { 
+                        username: user, 
+                        mountpoint: mountpoint,
+                        bytesReceived: 0,
+                        connectedAt: Date.now()
+                    });
                     console.log(`📡 [${socketId}] Rover [${user}] connected to [${mountpoint}]`);
                 } else {
                     console.log(`⛔ [${socketId}] Mountpoint [${mountpoint}] not available`);
@@ -421,19 +427,26 @@ function handleSourceData(socket, data) {
         console.log(`📊 [${socketId}] First RTCM data: ${hexDump}...`);
     }
     
-    console.log(`📊 [${socketId}] Received ${data.length} bytes from [${mpName}] (Total: ${mp.bytesIn}, Clients: ${mp.clients.size})`);
+    console.log(`📊 [${socketId}] Received ${data.length} bytes from [${mpName}] (Total from base: ${mp.bytesIn}, Clients: ${mp.clients.size})`);
     
     if (mp.clients && mp.clients.size > 0) {
         let sentCount = 0;
         mp.clients.forEach(c => {
             if (!c.destroyed && c.writable) {
-                c.write(data);
-                sentCount++;
+                const writeSuccess = c.write(data);
+                if (writeSuccess) {
+                    // นับ bytes ที่ส่งให้ rover แต่ละตัว
+                    const clientInfo = activeClients.get(c);
+                    if (clientInfo) {
+                        clientInfo.bytesReceived = (clientInfo.bytesReceived || 0) + data.length;
+                    }
+                    sentCount++;
+                }
             } else {
                 console.log(`⚠️ [${socketId}] Skipping destroyed/unwritable client`);
             }
         });
-        console.log(`📤 [${socketId}] Broadcasted to ${sentCount} rover(s)`);
+        console.log(`📤 [${socketId}] Broadcasted ${data.length} bytes to ${sentCount} rover(s)`);
     } else {
         console.log(`⏳ [${socketId}] No rovers connected yet`);
     }
@@ -467,6 +480,7 @@ function cleanupConnection(socket, socketId) {
     if (activeClients.has(socket)) {
         const info = activeClients.get(socket);
         console.log(`❌ [${socketId}] Cleaning up ROVER [${info.username}] from [${info.mountpoint}]`);
+        console.log(`📊 [${socketId}] Rover stats - Total bytes received: ${info.bytesReceived || 0}`);
         const mp = activeMountpoints.get(info.mountpoint);
         if (mp) {
             mp.clients.delete(socket);
