@@ -316,6 +316,51 @@ function processHandshake(socket, header, firstDataChunk, socketId, setAuthentic
             }
         });
     } else if (method === 'GET') {
+        console.log(`📡 [${socketId}] Processing GET request for mountpoint: [${mountpoint}]`);
+        
+        // ตรวจสอบว่าเป็น request ขอ Sourcetable หรือไม่
+        if (mountpoint === '' || mountpoint === '/') {
+            console.log(`📋 [${socketId}] Sourcetable request detected`);
+            
+            // สร้าง Sourcetable จาก database
+            db.all("SELECT name, lat, lon FROM mountpoints", [], (err, rows) => {
+                if (err) {
+                    console.error(`❌ [${socketId}] Database error: ${err.message}`);
+                    socket.write('ERROR - Database Error\r\n');
+                    socket.end();
+                    return;
+                }
+                
+                let sourcetableContent = '';
+                
+                // สร้างรายการ mountpoint
+                rows.forEach(mp => {
+                    const lat = mp.lat || 0.0;
+                    const lon = mp.lon || 0.0;
+                    // Format: STR;mountpoint;identifier;format;format-details;carrier;nav-system;network;country;lat;lon;nmea;solution;generator;compr-encryp;authentication;fee;bitrate;misc
+                    sourcetableContent += `STR;${mp.name};${mp.name};RTCM 3.2;1005(10),1077(1),1087(1),1097(1),1117(1),1127(1);2;GPS+GLO+GAL+BDS+QZS;NTRIP;THA;${lat.toFixed(2)};${lon.toFixed(2)};1;0;sNTRIP;none;N;N;0;;\r\n`;
+                });
+                
+                // เพิ่ม CAS (Caster) info
+                sourcetableContent += `CAS;localhost;${NTRIP_PORT};NTRIP Caster;NTRIP;0;THA;0.00;0.00;;\r\n`;
+                sourcetableContent += `ENDSOURCETABLE\r\n`;
+                
+                const response = 
+                    'SOURCETABLE 200 OK\r\n' +
+                    'Server: NTRIP-Caster/2.0\r\n' +
+                    'Content-Type: text/plain\r\n' +
+                    `Content-Length: ${sourcetableContent.length}\r\n` +
+                    '\r\n' +
+                    sourcetableContent;
+                
+                console.log(`✅ [${socketId}] Sending sourcetable with ${rows.length} mountpoint(s)`);
+                socket.write(response);
+                socket.end();
+            });
+            return;
+        }
+        
+        // ถ้าไม่ใช่ request sourcetable ให้ดำเนินการ authenticate rover
         console.log(`📡 [${socketId}] Processing ROVER connection...`);
         const authData = parseBasicAuth(lines);
         if (!authData) { 
