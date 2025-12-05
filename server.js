@@ -326,20 +326,27 @@ function summarizeRtcmMessages(messageSet) {
 function calculateRoverDataRate(clientInfo) {
     if (!clientInfo) return 0;
     const now = Date.now();
-    const lastTimestamp = clientInfo.lastRateTimestamp || clientInfo.connectedAt || now;
-    const elapsedSeconds = (now - lastTimestamp) / 1000;
-    if (elapsedSeconds <= 0) {
-        return Number((clientInfo.lastRateValue || 0).toFixed(2));
-    }
-    const lastBytes = clientInfo.lastRateBytes || 0;
+    const lastSampleTime = clientInfo.lastRateTimestamp || clientInfo.connectedAt || now;
+    const elapsedMs = now - lastSampleTime;
+    const elapsedSeconds = elapsedMs / 1000;
+    const lastBytes = clientInfo.lastRateBytes ?? clientInfo.bytesReceived;
     const deltaBytes = clientInfo.bytesReceived - lastBytes;
-    let rate = 0;
-    if (deltaBytes > 0) {
+
+    let rate = clientInfo.lastRateValue || 0;
+
+    if (deltaBytes > 0 && elapsedSeconds > 0) {
         rate = deltaBytes / elapsedSeconds;
+        clientInfo.lastRateTimestamp = now;
+        clientInfo.lastRateBytes = clientInfo.bytesReceived;
+        clientInfo.lastRateValue = rate;
+    } else if (elapsedMs > 5000) {
+        // หากไม่มีข้อมูลเกิน 5 วินาที ให้รีเซ็ตเป็นศูนย์
+        clientInfo.lastRateTimestamp = now;
+        clientInfo.lastRateBytes = clientInfo.bytesReceived;
+        clientInfo.lastRateValue = 0;
+        rate = 0;
     }
-    clientInfo.lastRateTimestamp = now;
-    clientInfo.lastRateBytes = clientInfo.bytesReceived;
-    clientInfo.lastRateValue = rate;
+
     return Number(rate.toFixed(2));
 }
 
