@@ -46,7 +46,92 @@ db.serialize(() => {
 const activeMountpoints = new Map(); 
 const activeClients = new Map();     
 
-function extractRtcmMessageIds(buffer) {
+function readBitsFromBuffer(buffer, bitStart, bitLength) {
+    let value = 0n;
+    for (let i = 0; i < bitLength; i++) {
+        const bitIndex = bitStart + i;
+        const byteIndex = Math.floor(bitIndex / 8);
+        if (byteIndex >= buffer.length) return null;
+        const bitOffset = 7 - (bitIndex % 8);
+        const bit = (buffer[byteIndex] >> bitOffset) & 1;
+        value = (value << 1n) | BigInt(bit);
+    }
+    return value;
+}
+
+function readSignedBits(buffer, bitStart, bitLength) {
+    const unsigned = readBitsFromBuffer(buffer, bitStart, bitLength);
+    if (unsigned === null) return null;
+    const totalBits = BigInt(bitLength);
+    const signBit = 1n << (totalBits - 1n);
+    const mask = (1n << totalBits) - 1n;
+    if (unsigned & signBit) {
+        return Number(-((~unsigned & mask) + 1n));
+    }
+    return Number(unsigned);
+}
+
+function ecefToGeodetic(x, y, z) {
+    const a = 6378137.0;
+    const eSq = 6.69437999014e-3;
+    const b = a * Math.sqrt(1 - eSq);
+    const epSq = (a * a - b * b) / (b * b);
+    const p = Math.sqrt(x * x + y * y);
+    const th = Math.atan2(a * z, b * p);
+    const lon = Math.atan2(y, x);
+    const sinTh = Math.sin(th);
+    const cosTh = Math.cos(th);
+    const lat = Math.atan2(z + epSq * b * Math.pow(sinTh, 3), p - eSq * a * Math.pow(cosTh, 3));
+    const sinLat = Math.sin(lat);
+    const N = a / Math.sqrt(1 - eSq * sinLat * sinLat);
+    const alt = p / Math.cos(lat) - N;
+    return {
+        lat: lat * 180 / Math.PI,
+        lon: lon * 180 / Math.PI,
+        alt: alt
+    };
+}
+
+function parseRtcmAntennaPosition(payload) {
+    if (!payload || payload.length < 18) return null;
+    const bitLength = payload.length * 8;
+    if (bitLength < 120) return null;
+    const headerBits = 12 + 12 + 6 + 4; // msg + station + year + indicators
+    const startOffsets = [];
+    for (let delta = 0; delta <= 4; delta++) {
+        startOffsets.push(headerBits + delta);
+    }
+    const gapOptions = [0, 1, 2];
+
+    const isValidRadius = (x, y, z) => {
+        const radius = Math.sqrt(x * x + y * y + z * z);
+        return radius > 6.0e6 && radius < 6.5e6;
+    };
+
+    for (const start of startOffsets) {
+        for (const gapXY of gapOptions) {
+            for (const gapYZ of gapOptions) {
+                const xRaw = readSignedBits(payload, start, 38);
+                const yStart = start + 38 + gapXY;
+                const yRaw = readSignedBits(payload, yStart, 38);
+                const zStart = yStart + 38 + gapYZ;
+                const zRaw = readSignedBits(payload, zStart, 38);
+                if (xRaw === null || yRaw === null || zRaw === null) continue;
+                const x = xRaw * 0.0001;
+                const y = yRaw * 0.0001;
+                const z = zRaw * 0.0001;
+                if (!isValidRadius(x, y, z)) continue;
+                const geo = ecefToGeodetic(x, y, z);
+                if (!geo || Number.isNaN(geo.lat) || Number.isNaN(geo.lon)) continue;
+                if (Math.abs(geo.lat) > 90.5 || Math.abs(geo.lon) > 180.5) continue;
+                return geo;
+            }
+        }
+    }
+    return null;
+}
+
+function processRtcmFrames(buffer, mountpointState) {
     const ids = [];
     if (!Buffer.isBuffer(buffer)) return ids;
     let index = 0;
@@ -60,12 +145,22 @@ function extractRtcmMessageIds(buffer) {
         const payloadStart = index + 3;
         const payloadEnd = payloadStart + payloadLength;
         const crcEnd = payloadEnd + 3;
-        if (crcEnd > buffer.length) break; // wait for more bytes on next chunk
+        if (crcEnd > buffer.length) break;
         if (payloadLength >= 2) {
             const byte1 = buffer[payloadStart];
             const byte2 = buffer[payloadStart + 1];
             const msgId = ((byte1 << 4) | (byte2 >> 4)) & 0x0FFF;
             ids.push(msgId);
+            if (mountpointState && (msgId === 1005 || msgId === 1006)) {
+                const payload = buffer.slice(payloadStart, payloadEnd);
+                const geo = parseRtcmAntennaPosition(payload);
+                if (geo) {
+                    mountpointState.autoLat = geo.lat;
+                    mountpointState.autoLon = geo.lon;
+                    mountpointState.autoAlt = geo.alt;
+                    mountpointState.lastAutoPosition = Date.now();
+                }
+            }
         }
         index = crcEnd;
     }
@@ -124,6 +219,9 @@ app.get('/api/status', (req, res) => {
     activeMountpoints.forEach((mpData, mpName) => {
         const uptime = Math.floor((Date.now() - mpData.startTime) / 1000);
         const baseMessages = summarizeRtcmMessages(mpData.messagesSeen);
+        const resolvedLat = typeof mpData.autoLat === 'number' ? mpData.autoLat : (typeof mpData.lat === 'number' ? mpData.lat : null);
+        const resolvedLon = typeof mpData.autoLon === 'number' ? mpData.autoLon : (typeof mpData.lon === 'number' ? mpData.lon : null);
+        const resolvedAlt = typeof mpData.autoAlt === 'number' ? mpData.autoAlt : null;
         if (mpData.clients.size === 0) {
             connectionList.push({ 
                 mountpoint: mpName, 
@@ -131,8 +229,9 @@ app.get('/api/status', (req, res) => {
                 baseMessages,
                 baseMessageIds: mpData.messagesSeen ? Array.from(mpData.messagesSeen) : [],
                 baseUptime: uptime,
-                baseLat: typeof mpData.lat === 'number' ? mpData.lat : null,
-                baseLon: typeof mpData.lon === 'number' ? mpData.lon : null,
+                baseLat: resolvedLat,
+                baseLon: resolvedLon,
+                baseAlt: resolvedAlt,
                 rover: null, 
                 roverIp: null,
                 roverPosition: null,
@@ -150,8 +249,9 @@ app.get('/api/status', (req, res) => {
                     baseMessages,
                     baseMessageIds: mpData.messagesSeen ? Array.from(mpData.messagesSeen) : [],
                     baseUptime: uptime,
-                    baseLat: typeof mpData.lat === 'number' ? mpData.lat : null,
-                    baseLon: typeof mpData.lon === 'number' ? mpData.lon : null,
+                    baseLat: resolvedLat,
+                    baseLon: resolvedLon,
+                    baseAlt: resolvedAlt,
                     rover: clientInfo ? clientInfo.username : null, 
                     roverIp: clientInfo ? clientInfo.ip : null,
                     roverPosition,
@@ -164,8 +264,16 @@ app.get('/api/status', (req, res) => {
 
     const baseMarkers = [];
     activeMountpoints.forEach((mpData, mpName) => {
-        if (typeof mpData.lat === 'number' && typeof mpData.lon === 'number') {
-            baseMarkers.push({ name: mpName, lat: mpData.lat, lon: mpData.lon });
+        const lat = typeof mpData.autoLat === 'number' ? mpData.autoLat : (typeof mpData.lat === 'number' ? mpData.lat : null);
+        const lon = typeof mpData.autoLon === 'number' ? mpData.autoLon : (typeof mpData.lon === 'number' ? mpData.lon : null);
+        if (typeof lat === 'number' && typeof lon === 'number') {
+            baseMarkers.push({ 
+                name: mpName, 
+                lat, 
+                lon,
+                auto: typeof mpData.autoLat === 'number',
+                alt: typeof mpData.autoAlt === 'number' ? mpData.autoAlt : null
+            });
         }
     });
     const roverMarkers = [];
@@ -229,9 +337,9 @@ app.delete('/api/users/:username', (req, res) => {
     });
 });
 
-function startWebServer(port = WEB_PORT) {
+function startWebServer(port = WEB_PORT, host = '0.0.0.0') {
     if (webServerInstance) return webServerInstance;
-    webServerInstance = server.listen(port, () => { 
+    webServerInstance = server.listen(port, host, () => { 
         console.log(`🌐 Web Dashboard running on port ${webServerInstance.address().port}`); 
     });
     return webServerInstance;
@@ -419,7 +527,11 @@ function processHandshake(socket, header, firstDataChunk, socketId, setAuthentic
                     ip: socket.remoteAddress,
                     lat: typeof row.lat === 'number' ? row.lat : null,
                     lon: typeof row.lon === 'number' ? row.lon : null,
-                    messagesSeen: new Set()
+                    messagesSeen: new Set(),
+                    autoLat: null,
+                    autoLon: null,
+                    autoAlt: null,
+                    lastAutoPosition: null
                 });
                 
                 console.log(`✅ [${socketId}] Base [${mountpoint}] Connected and Ready`);
@@ -548,7 +660,7 @@ function handleSourceData(socket, data) {
     if (!mp.messagesSeen) {
         mp.messagesSeen = new Set();
     }
-    const rtcmIds = extractRtcmMessageIds(data);
+    const rtcmIds = processRtcmFrames(data, mp);
     rtcmIds.forEach(id => mp.messagesSeen.add(id));
     
     mp.bytesIn += data.length;
@@ -626,9 +738,9 @@ function cleanupConnection(socket, socketId) {
 
 let ntripServerInstance = null;
 
-function startNtripServer(port = NTRIP_PORT) {
+function startNtripServer(port = NTRIP_PORT, host = '0.0.0.0') {
     if (ntripServerInstance) return ntripServerInstance;
-    ntripServerInstance = ntripServer.listen(port, () => {
+    ntripServerInstance = ntripServer.listen(port, host, () => {
         const currentPort = ntripServerInstance.address().port;
         console.log(`🚀 NTRIP Caster running on port ${currentPort}`);
     });

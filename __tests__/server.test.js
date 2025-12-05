@@ -4,7 +4,8 @@ const net = require('net');
 const request = require('supertest');
 
 const {
-    app,
+    startWebServer,
+    stopWebServer,
     startNtripServer,
     stopNtripServer,
     activeMountpoints,
@@ -52,9 +53,25 @@ const buildRtcmFrame = (messageId) => {
     return Buffer.concat([header, payload, crc]);
 };
 
+let webServer;
+
+beforeAll(async () => {
+    webServer = startWebServer(0, '127.0.0.1');
+    await new Promise((resolve, reject) => {
+        webServer.once('listening', resolve);
+        webServer.once('error', reject);
+    });
+});
+
+afterAll(async () => {
+    await stopWebServer();
+});
+
+const httpRequest = () => request(webServer);
+
 describe('REST API', () => {
     test('status endpoint reports zero active connections when idle', async () => {
-        const res = await request(app).get('/api/status');
+        const res = await httpRequest().get('/api/status');
         expect(res.status).toBe(200);
         expect(Array.isArray(res.body.connections)).toBe(true);
         expect(res.body.totalBases).toBe(0);
@@ -65,25 +82,25 @@ describe('REST API', () => {
         const mountName = `MP${Date.now()}`;
         const userName = `user${Date.now()}`;
 
-        const mpRes = await request(app)
+        const mpRes = await httpRequest()
             .post('/api/mountpoints')
             .send({ name: mountName, password: 'secret' })
             .set('Content-Type', 'application/json');
         expect(mpRes.status).toBe(200);
         expect(mpRes.body).toHaveProperty('message', 'Success');
 
-        const mpList = await request(app).get('/api/mountpoints');
+        const mpList = await httpRequest().get('/api/mountpoints');
         const mpNames = mpList.body.map(r => r.name);
         expect(mpNames).toContain(mountName);
 
-        const userRes = await request(app)
+        const userRes = await httpRequest()
             .post('/api/users')
             .send({ username: userName, password: 'pass1234' })
             .set('Content-Type', 'application/json');
         expect(userRes.status).toBe(200);
         expect(userRes.body).toHaveProperty('message', 'Success');
 
-        const userList = await request(app).get('/api/users');
+        const userList = await httpRequest().get('/api/users');
         const usernames = userList.body.map(r => r.username);
         expect(usernames).toContain(userName);
     });
@@ -122,7 +139,7 @@ describe('NTRIP TCP server', () => {
 
     test('accepts SOURCE login and reports RTCM message categories', async () => {
         const mountName = `LIVE${Date.now()}`;
-        await request(app)
+        await httpRequest()
             .post('/api/mountpoints')
             .send({ name: mountName, password: 'casterpass' })
             .set('Content-Type', 'application/json');
@@ -132,7 +149,7 @@ describe('NTRIP TCP server', () => {
         socket.write(rtcmFrame);
         await wait(100);
 
-        const statusRes = await request(app).get('/api/status');
+        const statusRes = await httpRequest().get('/api/status');
         const mountEntry = statusRes.body.connections.find(c => c.mountpoint === mountName);
         expect(mountEntry).toBeDefined();
         expect(mountEntry.baseMessages.some(msg => msg.includes('Multi-Service Messages'))).toBe(true);
