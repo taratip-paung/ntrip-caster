@@ -28,15 +28,24 @@ function renderBaseMessages(messages) {
 }
 
 function formatBasePosition(conn) {
-    const { baseLat, baseLon, baseAlt } = conn;
+    const { baseLat, baseLon, baseAlt, baseAltMsl, geoidModel } = conn;
     if (typeof baseLat !== 'number' || typeof baseLon !== 'number') {
         return '<span class="has-text-grey-light is-size-7">Unknown</span>';
     }
-    let text = `${baseLat.toFixed(5)}, ${baseLon.toFixed(5)}`;
-    if (typeof baseAlt === 'number') {
-        text += `<br><span class="has-text-grey is-size-7">Alt ${baseAlt.toFixed(1)} m</span>`;
+    const latLon = `${baseLat.toFixed(5)}, ${baseLon.toFixed(5)}`;
+    const mslText = typeof baseAltMsl === 'number'
+        ? `MSL ${baseAltMsl.toFixed(2)} m`
+        : 'MSL pending';
+    const ellipsoid = typeof baseAlt === 'number' ? `Ellip ${baseAlt.toFixed(2)} m` : null;
+    const modelTag = geoidModel ? `<span class="tag is-light is-size-7">${geoidModel}</span>` : '';
+    const lines = [`<strong>${latLon}</strong>`, `<span class="has-text-success is-size-7">${mslText}</span>`];
+    if (ellipsoid) {
+        lines.push(`<span class="has-text-grey is-size-7">${ellipsoid}</span>`);
     }
-    return text;
+    if (modelTag) {
+        lines.push(modelTag);
+    }
+    return lines.join('<br>');
 }
 
 function renderMap(mapData) {
@@ -53,7 +62,7 @@ function renderMap(mapData) {
             color: '#3273dc',
             fillColor: '#b3c9ff',
             fillOpacity: 0.9
-        }).bindPopup(`<strong>${base.name}</strong><br>Base Station`);
+        }).bindPopup(`<strong>${base.name}</strong><br>Base Station${typeof base.altMsl === 'number' ? `<br>MSL ${base.altMsl.toFixed(2)} m` : ''}`);
         marker.addTo(baseLayer);
         bounds.push([base.lat, base.lon]);
     });

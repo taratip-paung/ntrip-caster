@@ -1,4 +1,5 @@
 const net = require('net');
+const https = require('https');
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
@@ -45,6 +46,10 @@ db.serialize(() => {
 // ==========================================
 const activeMountpoints = new Map(); 
 const activeClients = new Map();     
+const geoidCache = new Map();
+const inflightGeoidRequests = new Map();
+const GEOID_PROVIDER = process.env.GEOID_PROVIDER || 'NOAA_EGM96';
+const ENABLE_GEOID_LOOKUP = GEOID_PROVIDER !== 'NONE';
 
 function readBitsFromBuffer(buffer, bitStart, bitLength) {
     let value = 0n;
@@ -197,12 +202,83 @@ function processRtcmFrames(buffer, mountpointState) {
                     if (typeof geo.arpHeight === 'number') {
                         mountpointState.autoHeight = geo.arpHeight;
                     }
+                    queueGeoidLookup(mountpointState, geo.lat, geo.lon, geo.alt);
                 }
             }
         }
         index = crcEnd;
     }
     return ids;
+}
+
+function queueGeoidLookup(mountpointState, lat, lon, ellipsoidAlt) {
+    if (!ENABLE_GEOID_LOOKUP || typeof lat !== 'number' || typeof lon !== 'number') {
+        mountpointState.baseMslAlt = ellipsoidAlt;
+        return;
+    }
+    const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+    if (geoidCache.has(key)) {
+        const undulation = geoidCache.get(key);
+        if (typeof undulation === 'number') {
+            mountpointState.geoidUndulation = undulation;
+            mountpointState.baseMslAlt = typeof ellipsoidAlt === 'number' ? ellipsoidAlt - undulation : null;
+        }
+        return;
+    }
+    mountpointState.baseMslAlt = ellipsoidAlt;
+    if (inflightGeoidRequests.has(key)) return;
+    const requestPromise = fetchGeoidUndulation(lat, lon)
+        .then((undulation) => {
+            geoidCache.set(key, undulation);
+            if (typeof undulation === 'number') {
+                mountpointState.geoidUndulation = undulation;
+                mountpointState.baseMslAlt = typeof ellipsoidAlt === 'number' ? ellipsoidAlt - undulation : null;
+            }
+        })
+        .catch((err) => {
+            console.warn(`⚠️ Unable to fetch geoid height for ${key}: ${err.message}`);
+            geoidCache.set(key, null);
+        })
+        .finally(() => {
+            inflightGeoidRequests.delete(key);
+        });
+    inflightGeoidRequests.set(key, requestPromise);
+}
+
+function fetchGeoidUndulation(lat, lon) {
+    return new Promise((resolve, reject) => {
+        if (GEOID_PROVIDER !== 'NOAA_EGM96') {
+            return resolve(null);
+        }
+        const params = new URLSearchParams({
+            lat: lat.toFixed(7),
+            lon: lon.toFixed(7),
+            units: 'meters'
+        });
+        const url = `https://geodesy.noaa.gov/api/geoid/egm96?${params.toString()}`;
+        https
+            .get(url, (res) => {
+                let data = '';
+                res.on('data', chunk => { data += chunk; });
+                res.on('end', () => {
+                    if (res.statusCode !== 200) {
+                        return reject(new Error(`HTTP ${res.statusCode}`));
+                    }
+                    try {
+                        const parsed = JSON.parse(data);
+                        const value = parsed.geoidHeight !== undefined ? Number(parsed.geoidHeight) : null;
+                        if (Number.isFinite(value)) {
+                            resolve(value);
+                        } else {
+                            reject(new Error('Invalid response'));
+                        }
+                    } catch (err) {
+                        reject(err);
+                    }
+                });
+            })
+            .on('error', reject);
+    });
 }
 
 function summarizeRtcmMessages(messageSet) {
@@ -260,6 +336,8 @@ app.get('/api/status', (req, res) => {
         const resolvedLat = typeof mpData.autoLat === 'number' ? mpData.autoLat : (typeof mpData.lat === 'number' ? mpData.lat : null);
         const resolvedLon = typeof mpData.autoLon === 'number' ? mpData.autoLon : (typeof mpData.lon === 'number' ? mpData.lon : null);
         const resolvedAlt = typeof mpData.autoAlt === 'number' ? mpData.autoAlt : null;
+        const resolvedMsl = typeof mpData.baseMslAlt === 'number' ? mpData.baseMslAlt : (resolvedAlt !== null && typeof mpData.geoidUndulation === 'number' ? resolvedAlt - mpData.geoidUndulation : resolvedAlt);
+        const geoidSource = typeof mpData.geoidUndulation === 'number' ? (GEOID_PROVIDER === 'NOAA_EGM96' ? 'EGM96 (NOAA)' : GEOID_PROVIDER) : null;
         if (mpData.clients.size === 0) {
             connectionList.push({ 
                 mountpoint: mpName, 
@@ -270,6 +348,8 @@ app.get('/api/status', (req, res) => {
                 baseLat: resolvedLat,
                 baseLon: resolvedLon,
                 baseAlt: resolvedAlt,
+                baseAltMsl: resolvedMsl,
+                geoidModel: geoidSource,
                 rover: null, 
                 roverIp: null,
                 roverPosition: null,
@@ -290,6 +370,8 @@ app.get('/api/status', (req, res) => {
                     baseLat: resolvedLat,
                     baseLon: resolvedLon,
                     baseAlt: resolvedAlt,
+                    baseAltMsl: resolvedMsl,
+                    geoidModel: geoidSource,
                     rover: clientInfo ? clientInfo.username : null, 
                     roverIp: clientInfo ? clientInfo.ip : null,
                     roverPosition,
@@ -310,7 +392,8 @@ app.get('/api/status', (req, res) => {
                 lat, 
                 lon,
                 auto: typeof mpData.autoLat === 'number',
-                alt: typeof mpData.autoAlt === 'number' ? mpData.autoAlt : null
+                alt: typeof mpData.autoAlt === 'number' ? mpData.autoAlt : null,
+                altMsl: typeof mpData.baseMslAlt === 'number' ? mpData.baseMslAlt : null
             });
         }
     });
