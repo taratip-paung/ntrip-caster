@@ -20,18 +20,23 @@ function formatDuration(totalSeconds) {
     return parts.join(' ');
 }
 
-function formatPosition(position) {
-    if (!position || typeof position.lat !== 'number' || typeof position.lon !== 'number') {
-        return '<span class="has-text-grey-light is-size-7">Unknown</span>';
-    }
-    return `${position.lat.toFixed(5)}, ${position.lon.toFixed(5)}`;
-}
-
 function renderBaseMessages(messages) {
     if (!messages || messages.length === 0) {
         return '<span class="tag is-light is-size-7">No RTCM yet</span>';
     }
     return messages.map(msg => `<span class="tag is-info is-light is-size-7">${msg}</span>`).join('<br>');
+}
+
+function formatBasePosition(conn) {
+    const { baseLat, baseLon, baseAlt } = conn;
+    if (typeof baseLat !== 'number' || typeof baseLon !== 'number') {
+        return '<span class="has-text-grey-light is-size-7">Unknown</span>';
+    }
+    let text = `${baseLat.toFixed(5)}, ${baseLon.toFixed(5)}`;
+    if (typeof baseAlt === 'number') {
+        text += `<br><span class="has-text-grey is-size-7">Alt ${baseAlt.toFixed(1)} m</span>`;
+    }
+    return text;
 }
 
 function renderMap(mapData) {
@@ -94,18 +99,18 @@ function updateDashboard() {
                     const roverData = typeof conn.roverDataRate === 'number' ? conn.roverDataRate.toFixed(2) : '0.00';
                     const baseIp = conn.baseIp || '-';
                     const baseUptime = formatDuration(conn.baseUptime);
-                    const roverPos = formatPosition(conn.roverPosition);
                     const baseMessages = renderBaseMessages(conn.baseMessages);
+                    const basePos = formatBasePosition(conn);
 
                     tbody.innerHTML += `
                         <tr>
                             <td><span class="tag is-success is-light">🟢 ${conn.mountpoint}</span></td>
                             <td><div class="base-message-tags">${baseMessages}</div></td>
+                            <td>${basePos}</td>
                             <td>${baseIp}</td>
                             <td>${baseUptime}</td>
                             <td>${roverName}</td>
                             <td>${roverIp}</td>
-                            <td>${roverPos}</td>
                             <td>${roverData}</td>
                         </tr>
                     `;
