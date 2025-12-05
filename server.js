@@ -331,7 +331,7 @@ function calculateRoverDataRate(clientInfo) {
         return 0;
     }
 
-    const windowMs = 1000;
+    const windowMs = 4000;
     const cutoff = now - windowMs;
     let bytesSum = 0;
     let earliestTs = now;
@@ -859,8 +859,8 @@ function handleSourceData(socket, data) {
                         }
                         const ts = Date.now();
                         clientInfo.byteTimeline.push({ ts, bytes: data.length });
-                        // เก็บข้อมูลย้อนหลัง 5 วินาทีพอ
-                        const pruneCutoff = ts - 5000;
+                        // เก็บข้อมูลย้อนหลัง 10 วินาที
+                        const pruneCutoff = ts - 10000;
                         while (clientInfo.byteTimeline.length > 0 && clientInfo.byteTimeline[0].ts < pruneCutoff) {
                             clientInfo.byteTimeline.shift();
                         }
