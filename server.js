@@ -331,7 +331,7 @@ function calculateRoverDataRate(clientInfo) {
         return 0;
     }
 
-    const windowMs = 4000;
+    const windowMs = 2000;
     const cutoff = now - windowMs;
     let bytesSum = 0;
     let earliestTs = now;
