@@ -3,6 +3,70 @@ const map = L.map('map').setView([13.7563, 100.5018], 6); // พิกัดก�
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap contributors'
 }).addTo(map);
+const baseLayer = L.layerGroup().addTo(map);
+const roverLayer = L.layerGroup().addTo(map);
+let mapFittedOnce = false;
+
+function formatDuration(totalSeconds) {
+    if (typeof totalSeconds !== 'number' || Number.isNaN(totalSeconds)) return '-';
+    const seconds = Math.max(0, Math.floor(totalSeconds));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    const parts = [];
+    if (hours) parts.push(`${hours}h`);
+    if (minutes) parts.push(`${minutes}m`);
+    parts.push(`${secs}s`);
+    return parts.join(' ');
+}
+
+function formatPosition(position) {
+    if (!position || typeof position.lat !== 'number' || typeof position.lon !== 'number') {
+        return '<span class="has-text-grey-light is-size-7">Unknown</span>';
+    }
+    return `${position.lat.toFixed(5)}, ${position.lon.toFixed(5)}`;
+}
+
+function renderBaseMessages(messages) {
+    if (!messages || messages.length === 0) {
+        return '<span class="tag is-light is-size-7">No RTCM yet</span>';
+    }
+    return messages.map(msg => `<span class="tag is-info is-light is-size-7">${msg}</span>`).join('<br>');
+}
+
+function renderMap(mapData) {
+    if (!mapData) return;
+    baseLayer.clearLayers();
+    roverLayer.clearLayers();
+    const bounds = [];
+
+    (mapData.bases || []).forEach(base => {
+        if (typeof base.lat !== 'number' || typeof base.lon !== 'number') return;
+        const marker = L.circleMarker([base.lat, base.lon], {
+            radius: 6,
+            weight: 2,
+            color: '#3273dc',
+            fillColor: '#b3c9ff',
+            fillOpacity: 0.9
+        }).bindPopup(`<strong>${base.name}</strong><br>Base Station`);
+        marker.addTo(baseLayer);
+        bounds.push([base.lat, base.lon]);
+    });
+
+    (mapData.rovers || []).forEach(rover => {
+        if (typeof rover.lat !== 'number' || typeof rover.lon !== 'number') return;
+        const marker = L.marker([rover.lat, rover.lon]).bindPopup(`<strong>${rover.name}</strong><br>via ${rover.mountpoint || '-'}`);
+        marker.addTo(roverLayer);
+        bounds.push([rover.lat, rover.lon]);
+    });
+
+    if (bounds.length === 0) {
+        mapFittedOnce = false;
+    } else if (!mapFittedOnce) {
+        map.fitBounds(bounds, { padding: [20, 20] });
+        mapFittedOnce = true;
+    }
+}
 
 // --- 2. DASHBOARD LOGIC (ทำงานอัตโนมัติ) ---
 function updateDashboard() {
@@ -22,29 +86,33 @@ function updateDashboard() {
             
             // แสดงรายการในตาราง
             if (data.connections.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="3" class="has-text-centered has-text-grey is-size-7 p-4">... รอการเชื่อมต่อ ...</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" class="has-text-centered has-text-grey is-size-7 p-4">... รอการเชื่อมต่อ ...</td></tr>';
             } else {
                 data.connections.forEach(conn => {
-                    const kb = (conn.bytesIn / 1024).toFixed(1);
-                    
-                    // ตกแต่ง: ถ้าไม่มี Rover ให้แสดงเป็นตัวหนังสือสีจางๆ
-                    let roverDisplay = '';
-                    if (conn.rover === '-') {
-                        roverDisplay = '<span class="has-text-grey-light is-size-7">Waiting...</span>';
-                    } else {
-                        roverDisplay = `👤 <strong>${conn.rover}</strong>`;
-                    }
+                    const roverName = conn.rover ? `👤 <strong>${conn.rover}</strong>` : '<span class="has-text-grey-light is-size-7">Waiting...</span>';
+                    const roverIp = conn.roverIp || '-';
+                    const roverData = typeof conn.roverDataRate === 'number' ? conn.roverDataRate.toFixed(2) : '0.00';
+                    const baseIp = conn.baseIp || '-';
+                    const baseUptime = formatDuration(conn.baseUptime);
+                    const roverPos = formatPosition(conn.roverPosition);
+                    const baseMessages = renderBaseMessages(conn.baseMessages);
 
-                    // สร้างแถวตาราง
                     tbody.innerHTML += `
                         <tr>
                             <td><span class="tag is-success is-light">🟢 ${conn.mountpoint}</span></td>
-                            <td>${roverDisplay}</td>
-                            <td>${kb} KB</td>
+                            <td><div class="base-message-tags">${baseMessages}</div></td>
+                            <td>${baseIp}</td>
+                            <td>${baseUptime}</td>
+                            <td>${roverName}</td>
+                            <td>${roverIp}</td>
+                            <td>${roverPos}</td>
+                            <td>${roverData}</td>
                         </tr>
                     `;
                 });
             }
+
+            renderMap(data.map);
         })
         .catch(err => console.error("API Error:", err));
 }

@@ -4,6 +4,7 @@ const http = require('http');
 const { Server } = require("socket.io");
 const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcryptjs');
+const path = require('path');
 
 // ==========================================
 // ⚙️ CONFIGURATION
@@ -15,7 +16,8 @@ const SALT_ROUNDS = 10;
 // ==========================================
 // 🗄️ DATABASE SETUP
 // ==========================================
-const db = new sqlite3.Database('./data/ntrip.sqlite');
+const DB_PATH = process.env.NTRIP_DB_PATH || path.join(__dirname, 'data', 'ntrip.sqlite');
+const db = new sqlite3.Database(DB_PATH);
 
 db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS mountpoints (name TEXT PRIMARY KEY, password TEXT, lat REAL, lon REAL)`);
@@ -44,12 +46,75 @@ db.serialize(() => {
 const activeMountpoints = new Map(); 
 const activeClients = new Map();     
 
+function extractRtcmMessageIds(buffer) {
+    const ids = [];
+    if (!Buffer.isBuffer(buffer)) return ids;
+    let index = 0;
+    while (index < buffer.length - 5) {
+        if (buffer[index] !== 0xD3) {
+            index++;
+            continue;
+        }
+        if (index + 2 >= buffer.length) break;
+        const payloadLength = ((buffer[index + 1] & 0x03) << 8) | buffer[index + 2];
+        const payloadStart = index + 3;
+        const payloadEnd = payloadStart + payloadLength;
+        const crcEnd = payloadEnd + 3;
+        if (crcEnd > buffer.length) break; // wait for more bytes on next chunk
+        if (payloadLength >= 2) {
+            const byte1 = buffer[payloadStart];
+            const byte2 = buffer[payloadStart + 1];
+            const msgId = ((byte1 << 4) | (byte2 >> 4)) & 0x0FFF;
+            ids.push(msgId);
+        }
+        index = crcEnd;
+    }
+    return ids;
+}
+
+function summarizeRtcmMessages(messageSet) {
+    if (!messageSet || messageSet.size === 0) return [];
+    const ids = Array.from(messageSet).sort((a, b) => a - b);
+    const summaries = [];
+
+    const addSummary = (label, predicate) => {
+        const matches = ids.filter(predicate);
+        if (matches.length > 0) {
+            const preview = matches.slice(0, 4).join(', ');
+            const suffix = matches.length > 4 ? ', …' : '';
+            summaries.push(`${label} (${preview}${suffix})`);
+        }
+    };
+
+    addSummary('RTK Observables (Corrections)', id => (id >= 1001 && id <= 1029) || [1005, 1006, 1007, 1008].includes(id));
+    addSummary('Multi-Service Messages (MSM)', id => id >= 1070 && id <= 1137);
+    addSummary('GNSS Ephemeris', id => (id >= 1019 && id <= 1046) || id === 1044);
+    addSummary('SSR Corrections', id => id >= 1057 && id <= 1068);
+    addSummary('Integrity / Quality Monitoring', id => id >= 1230 && id <= 1240);
+
+    if (summaries.length === 0) {
+        const preview = ids.slice(0, 6).join(', ');
+        const suffix = ids.length > 6 ? ', …' : '';
+        summaries.push(`RTCM Messages (${preview}${suffix})`);
+    }
+
+    return summaries;
+}
+
+function calculateRoverDataRate(clientInfo) {
+    if (!clientInfo) return 0;
+    const elapsedSeconds = Math.max((Date.now() - clientInfo.connectedAt) / 1000, 1);
+    const rate = (clientInfo.bytesReceived / 1024) / elapsedSeconds;
+    return Number(rate.toFixed(2));
+}
+
 // ==========================================
 // 🌐 WEB SERVER & API
 // ==========================================
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
+let webServerInstance = null;
 
 app.use(express.static('public'));
 app.use(express.json());
@@ -58,32 +123,71 @@ app.get('/api/status', (req, res) => {
     const connectionList = [];
     activeMountpoints.forEach((mpData, mpName) => {
         const uptime = Math.floor((Date.now() - mpData.startTime) / 1000);
+        const baseMessages = summarizeRtcmMessages(mpData.messagesSeen);
         if (mpData.clients.size === 0) {
             connectionList.push({ 
                 mountpoint: mpName, 
-                rover: '-', 
-                bytesIn: 0, 
-                uptime: uptime, 
+                baseIp: mpData.ip || (mpData.socket ? mpData.socket.remoteAddress : ''),
+                baseMessages,
+                baseMessageIds: mpData.messagesSeen ? Array.from(mpData.messagesSeen) : [],
+                baseUptime: uptime,
+                baseLat: typeof mpData.lat === 'number' ? mpData.lat : null,
+                baseLon: typeof mpData.lon === 'number' ? mpData.lon : null,
+                rover: null, 
+                roverIp: null,
+                roverPosition: null,
+                roverDataRate: 0,
                 status: 'WAITING' 
             });
         } else {
             mpData.clients.forEach(clientSocket => {
                 const clientInfo = activeClients.get(clientSocket);
-                const roverBytes = clientInfo ? (clientInfo.bytesReceived || 0) : 0;
+                const roverDataRate = calculateRoverDataRate(clientInfo);
+                const roverPosition = clientInfo && clientInfo.position ? clientInfo.position : null;
                 connectionList.push({ 
                     mountpoint: mpName, 
-                    rover: clientInfo ? clientInfo.username : 'Unknown', 
-                    bytesIn: roverBytes, 
-                    uptime: uptime, 
+                    baseIp: mpData.ip || (mpData.socket ? mpData.socket.remoteAddress : ''),
+                    baseMessages,
+                    baseMessageIds: mpData.messagesSeen ? Array.from(mpData.messagesSeen) : [],
+                    baseUptime: uptime,
+                    baseLat: typeof mpData.lat === 'number' ? mpData.lat : null,
+                    baseLon: typeof mpData.lon === 'number' ? mpData.lon : null,
+                    rover: clientInfo ? clientInfo.username : null, 
+                    roverIp: clientInfo ? clientInfo.ip : null,
+                    roverPosition,
+                    roverDataRate,
                     status: 'CONNECTED' 
                 });
             });
         }
     });
+
+    const baseMarkers = [];
+    activeMountpoints.forEach((mpData, mpName) => {
+        if (typeof mpData.lat === 'number' && typeof mpData.lon === 'number') {
+            baseMarkers.push({ name: mpName, lat: mpData.lat, lon: mpData.lon });
+        }
+    });
+    const roverMarkers = [];
+    activeClients.forEach((clientInfo) => {
+        if (clientInfo.position && typeof clientInfo.position.lat === 'number' && typeof clientInfo.position.lon === 'number') {
+            roverMarkers.push({ 
+                name: clientInfo.username, 
+                lat: clientInfo.position.lat, 
+                lon: clientInfo.position.lon,
+                mountpoint: clientInfo.mountpoint
+            });
+        }
+    });
+
     res.json({ 
         connections: connectionList, 
         totalBases: activeMountpoints.size, 
-        totalRovers: activeClients.size 
+        totalRovers: activeClients.size,
+        map: {
+            bases: baseMarkers,
+            rovers: roverMarkers
+        }
     });
 });
 
@@ -125,9 +229,24 @@ app.delete('/api/users/:username', (req, res) => {
     });
 });
 
-server.listen(WEB_PORT, () => { 
-    console.log(`🌐 Web Dashboard running on port ${WEB_PORT}`); 
-});
+function startWebServer(port = WEB_PORT) {
+    if (webServerInstance) return webServerInstance;
+    webServerInstance = server.listen(port, () => { 
+        console.log(`🌐 Web Dashboard running on port ${webServerInstance.address().port}`); 
+    });
+    return webServerInstance;
+}
+
+function stopWebServer() {
+    return new Promise((resolve, reject) => {
+        if (!webServerInstance) return resolve();
+        webServerInstance.close((err) => {
+            if (err) return reject(err);
+            webServerInstance = null;
+            resolve();
+        });
+    });
+}
 
 // ==========================================
 // 📡 NTRIP CASTER SERVER (TCP)
@@ -296,7 +415,11 @@ function processHandshake(socket, header, firstDataChunk, socketId, setAuthentic
                     clients: new Set(), 
                     bytesIn: 0, 
                     startTime: Date.now(),
-                    socketId: socketId
+                    socketId: socketId,
+                    ip: socket.remoteAddress,
+                    lat: typeof row.lat === 'number' ? row.lat : null,
+                    lon: typeof row.lon === 'number' ? row.lon : null,
+                    messagesSeen: new Set()
                 });
                 
                 console.log(`✅ [${socketId}] Base [${mountpoint}] Connected and Ready`);
@@ -389,7 +512,9 @@ function processHandshake(socket, header, firstDataChunk, socketId, setAuthentic
                         username: user, 
                         mountpoint: mountpoint,
                         bytesReceived: 0,
-                        connectedAt: Date.now()
+                        connectedAt: Date.now(),
+                        ip: socket.remoteAddress,
+                        position: null
                     });
                     console.log(`📡 [${socketId}] Rover [${user}] connected to [${mountpoint}]`);
                 } else {
@@ -419,6 +544,12 @@ function handleSourceData(socket, data) {
         console.error(`❌ [${socketId}] No mountpoint found for [${mpName}]`);
         return;
     }
+
+    if (!mp.messagesSeen) {
+        mp.messagesSeen = new Set();
+    }
+    const rtcmIds = extractRtcmMessageIds(data);
+    rtcmIds.forEach(id => mp.messagesSeen.add(id));
     
     mp.bytesIn += data.length;
     
@@ -493,6 +624,41 @@ function cleanupConnection(socket, socketId) {
     console.log(`🧹 [${socketId}] ========== CLEANUP END ==========\n`);
 }
 
-ntripServer.listen(NTRIP_PORT, () => {
-    console.log(`🚀 NTRIP Caster running on port ${NTRIP_PORT}`);
-});
+let ntripServerInstance = null;
+
+function startNtripServer(port = NTRIP_PORT) {
+    if (ntripServerInstance) return ntripServerInstance;
+    ntripServerInstance = ntripServer.listen(port, () => {
+        const currentPort = ntripServerInstance.address().port;
+        console.log(`🚀 NTRIP Caster running on port ${currentPort}`);
+    });
+    return ntripServerInstance;
+}
+
+function stopNtripServer() {
+    return new Promise((resolve, reject) => {
+        if (!ntripServerInstance) return resolve();
+        ntripServerInstance.close((err) => {
+            if (err) return reject(err);
+            ntripServerInstance = null;
+            resolve();
+        });
+    });
+}
+
+if (require.main === module) {
+    startWebServer();
+    startNtripServer();
+}
+
+module.exports = {
+    app,
+    server,
+    startWebServer,
+    stopWebServer,
+    ntripServer,
+    startNtripServer,
+    stopNtripServer,
+    activeMountpoints,
+    activeClients
+};
