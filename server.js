@@ -92,43 +92,78 @@ function ecefToGeodetic(x, y, z) {
     };
 }
 
-function parseRtcmAntennaPosition(payload) {
-    if (!payload || payload.length < 18) return null;
-    const bitLength = payload.length * 8;
-    if (bitLength < 120) return null;
-    const headerBits = 12 + 12 + 6 + 4; // msg + station + year + indicators
-    const startOffsets = [];
-    for (let delta = 0; delta <= 4; delta++) {
-        startOffsets.push(headerBits + delta);
-    }
-    const gapOptions = [0, 1, 2];
+function parseRtcmAntennaPosition(payload, messageId) {
+    if (!payload || payload.length === 0) return null;
+    const totalBits = payload.length * 8;
+    const requiredBits = messageId === 1006 ? 12 + 12 + 6 + 4 + 38 + 1 + 1 + 38 + 2 + 38 + 16 : 12 + 12 + 6 + 4 + 38 + 1 + 1 + 38 + 2 + 38;
+    if (totalBits < requiredBits) return null;
 
-    const isValidRadius = (x, y, z) => {
-        const radius = Math.sqrt(x * x + y * y + z * z);
-        return radius > 6.0e6 && radius < 6.5e6;
+    let bitIndex = 0;
+    const readUnsigned = (length) => {
+        const raw = readBitsFromBuffer(payload, bitIndex, length);
+        if (raw === null) return null;
+        bitIndex += length;
+        return Number(raw);
+    };
+    const readSigned = (length) => {
+        const value = readSignedBits(payload, bitIndex, length);
+        if (value === null) return null;
+        bitIndex += length;
+        return value;
     };
 
-    for (const start of startOffsets) {
-        for (const gapXY of gapOptions) {
-            for (const gapYZ of gapOptions) {
-                const xRaw = readSignedBits(payload, start, 38);
-                const yStart = start + 38 + gapXY;
-                const yRaw = readSignedBits(payload, yStart, 38);
-                const zStart = yStart + 38 + gapYZ;
-                const zRaw = readSignedBits(payload, zStart, 38);
-                if (xRaw === null || yRaw === null || zRaw === null) continue;
-                const x = xRaw * 0.0001;
-                const y = yRaw * 0.0001;
-                const z = zRaw * 0.0001;
-                if (!isValidRadius(x, y, z)) continue;
-                const geo = ecefToGeodetic(x, y, z);
-                if (!geo || Number.isNaN(geo.lat) || Number.isNaN(geo.lon)) continue;
-                if (Math.abs(geo.lat) > 90.5 || Math.abs(geo.lon) > 180.5) continue;
-                return geo;
-            }
+    const msgType = readUnsigned(12);
+    if (msgType === null || (msgType !== 1005 && msgType !== 1006)) {
+        return null;
+    }
+
+    // Skip fields we don't need but must advance through
+    const stationId = readUnsigned(12);
+    const itrfYear = readUnsigned(6);
+    readUnsigned(1); // GPS Indicator
+    readUnsigned(1); // GLONASS Indicator
+    readUnsigned(1); // Galileo Indicator
+    readUnsigned(1); // Reference-station indicator
+
+    const xRaw = readSigned(38);
+    readUnsigned(1); // Single receiver oscillator indicator
+    readUnsigned(1); // Reserved
+    const yRaw = readSigned(38);
+    readUnsigned(2); // Quarter cycle indicator
+    const zRaw = readSigned(38);
+    let height = null;
+    if (msgType === 1006) {
+        const rawHeight = readUnsigned(16);
+        if (rawHeight !== null) {
+            height = rawHeight * 0.0001;
         }
     }
-    return null;
+
+    if (xRaw === null || yRaw === null || zRaw === null) {
+        return null;
+    }
+
+    const x = xRaw * 0.0001;
+    const y = yRaw * 0.0001;
+    const z = zRaw * 0.0001;
+    const radius = Math.sqrt(x * x + y * y + z * z);
+    if (radius < 6.0e6 || radius > 6.5e6) {
+        return null;
+    }
+    const geo = ecefToGeodetic(x, y, z);
+    if (!geo || Number.isNaN(geo.lat) || Number.isNaN(geo.lon)) {
+        return null;
+    }
+    if (Math.abs(geo.lat) > 91 || Math.abs(geo.lon) > 181) {
+        return null;
+    }
+
+    return {
+        ...geo,
+        itrfYear,
+        stationId,
+        arpHeight: height
+    };
 }
 
 function processRtcmFrames(buffer, mountpointState) {
@@ -153,12 +188,15 @@ function processRtcmFrames(buffer, mountpointState) {
             ids.push(msgId);
             if (mountpointState && (msgId === 1005 || msgId === 1006)) {
                 const payload = buffer.slice(payloadStart, payloadEnd);
-                const geo = parseRtcmAntennaPosition(payload);
+                const geo = parseRtcmAntennaPosition(payload, msgId);
                 if (geo) {
                     mountpointState.autoLat = geo.lat;
                     mountpointState.autoLon = geo.lon;
                     mountpointState.autoAlt = geo.alt;
                     mountpointState.lastAutoPosition = Date.now();
+                    if (typeof geo.arpHeight === 'number') {
+                        mountpointState.autoHeight = geo.arpHeight;
+                    }
                 }
             }
         }
