@@ -117,7 +117,7 @@ function updateDashboard() {
                 data.connections.forEach(conn => {
                     const roverName = conn.rover ? `👤 <strong>${conn.rover}</strong>` : '<span class="has-text-grey-light is-size-7">Waiting...</span>';
                     const roverIp = conn.roverIp || '-';
-                    const roverData = typeof conn.roverDataRate === 'number' ? conn.roverDataRate.toFixed(2) : '0.00';
+                    const roverData = typeof conn.roverDataRate === 'number' ? conn.roverDataRate.toFixed(0) : '0';
                     const baseIp = conn.baseIp || '-';
                     const baseUptime = formatDuration(conn.baseUptime);
                     const baseMessages = renderBaseMessages(conn.baseMessages);

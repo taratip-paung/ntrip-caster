@@ -325,8 +325,21 @@ function summarizeRtcmMessages(messageSet) {
 
 function calculateRoverDataRate(clientInfo) {
     if (!clientInfo) return 0;
-    const elapsedSeconds = Math.max((Date.now() - clientInfo.connectedAt) / 1000, 1);
-    const rate = (clientInfo.bytesReceived / 1024) / elapsedSeconds;
+    const now = Date.now();
+    const lastTimestamp = clientInfo.lastRateTimestamp || clientInfo.connectedAt || now;
+    const elapsedSeconds = (now - lastTimestamp) / 1000;
+    if (elapsedSeconds <= 0) {
+        return Number((clientInfo.lastRateValue || 0).toFixed(2));
+    }
+    const lastBytes = clientInfo.lastRateBytes || 0;
+    const deltaBytes = clientInfo.bytesReceived - lastBytes;
+    let rate = 0;
+    if (deltaBytes > 0) {
+        rate = deltaBytes / elapsedSeconds;
+    }
+    clientInfo.lastRateTimestamp = now;
+    clientInfo.lastRateBytes = clientInfo.bytesReceived;
+    clientInfo.lastRateValue = rate;
     return Number(rate.toFixed(2));
 }
 
@@ -768,7 +781,10 @@ function processHandshake(socket, header, firstDataChunk, socketId, setAuthentic
                         bytesReceived: 0,
                         connectedAt: Date.now(),
                         ip: socket.remoteAddress,
-                        position: null
+                        position: null,
+                        lastRateTimestamp: Date.now(),
+                        lastRateBytes: 0,
+                        lastRateValue: 0
                     });
                     console.log(`📡 [${socketId}] Rover [${user}] connected to [${mountpoint}]`);
                 } else {
