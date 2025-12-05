@@ -353,8 +353,9 @@ function calculateRoverDataRate(clientInfo) {
     const effectiveStart = Math.min(earliestTs, cutoff);
     const durationMs = now - effectiveStart;
     const durationSeconds = durationMs > 0 ? durationMs / 1000 : 1;
-    const rate = bytesSum / durationSeconds;
-    return Number(rate.toFixed(2));
+    const rateBytesPerSec = bytesSum / durationSeconds;
+    const rateBitsPerSec = rateBytesPerSec * 8;
+    return Number(rateBitsPerSec.toFixed(2));
 }
 
 // ==========================================
