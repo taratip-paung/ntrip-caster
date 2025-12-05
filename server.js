@@ -326,23 +326,34 @@ function summarizeRtcmMessages(messageSet) {
 function calculateRoverDataRate(clientInfo) {
     if (!clientInfo) return 0;
     const now = Date.now();
-    const lastSampleTime = clientInfo.lastRateTimestamp || clientInfo.connectedAt || now;
-    const elapsedMs = now - lastSampleTime;
-    if (elapsedMs < 1000) {
-        return Number((clientInfo.lastRateValue || 0).toFixed(2));
+    const timeline = clientInfo.byteTimeline || [];
+    if (timeline.length === 0) {
+        return 0;
     }
 
-    const lastBytes = clientInfo.lastRateBytes ?? clientInfo.bytesReceived;
-    const deltaBytes = clientInfo.bytesReceived - lastBytes;
-    const elapsedSeconds = elapsedMs / 1000;
-    let rate = 0;
-    if (deltaBytes > 0 && elapsedSeconds > 0) {
-        rate = deltaBytes / elapsedSeconds;
+    const windowMs = 1000;
+    const cutoff = now - windowMs;
+    let bytesSum = 0;
+    let earliestTs = now;
+
+    for (let i = 0; i < timeline.length; i++) {
+        const entry = timeline[i];
+        if (entry.ts >= cutoff) {
+            bytesSum += entry.bytes;
+            if (entry.ts < earliestTs) {
+                earliestTs = entry.ts;
+            }
+        }
     }
 
-    clientInfo.lastRateTimestamp = now;
-    clientInfo.lastRateBytes = clientInfo.bytesReceived;
-    clientInfo.lastRateValue = rate;
+    if (bytesSum === 0) {
+        return 0;
+    }
+
+    const effectiveStart = Math.min(earliestTs, cutoff);
+    const durationMs = now - effectiveStart;
+    const durationSeconds = durationMs > 0 ? durationMs / 1000 : 1;
+    const rate = bytesSum / durationSeconds;
     return Number(rate.toFixed(2));
 }
 
@@ -787,7 +798,8 @@ function processHandshake(socket, header, firstDataChunk, socketId, setAuthentic
                         position: null,
                         lastRateTimestamp: Date.now(),
                         lastRateBytes: 0,
-                        lastRateValue: 0
+                        lastRateValue: 0,
+                        byteTimeline: []
                     });
                     console.log(`📡 [${socketId}] Rover [${user}] connected to [${mountpoint}]`);
                 } else {
@@ -835,17 +847,27 @@ function handleSourceData(socket, data) {
     
     if (mp.clients && mp.clients.size > 0) {
         let sentCount = 0;
-        mp.clients.forEach(c => {
-            if (!c.destroyed && c.writable) {
-                c.write(data);
-                const clientInfo = activeClients.get(c);
-                if (clientInfo) {
-                    clientInfo.bytesReceived = (clientInfo.bytesReceived || 0) + data.length;
+            mp.clients.forEach(c => {
+                if (!c.destroyed && c.writable) {
+                    c.write(data);
+                    const clientInfo = activeClients.get(c);
+                    if (clientInfo) {
+                        clientInfo.bytesReceived = (clientInfo.bytesReceived || 0) + data.length;
+                        if (!clientInfo.byteTimeline) {
+                            clientInfo.byteTimeline = [];
+                        }
+                        const ts = Date.now();
+                        clientInfo.byteTimeline.push({ ts, bytes: data.length });
+                        // เก็บข้อมูลย้อนหลัง 5 วินาทีพอ
+                        const pruneCutoff = ts - 5000;
+                        while (clientInfo.byteTimeline.length > 0 && clientInfo.byteTimeline[0].ts < pruneCutoff) {
+                            clientInfo.byteTimeline.shift();
+                        }
+                    }
+                    sentCount++;
+                } else {
+                    console.log(`⚠️ [${socketId}] Skipping destroyed/unwritable client`);
                 }
-                sentCount++;
-            } else {
-                console.log(`⚠️ [${socketId}] Skipping destroyed/unwritable client`);
-            }
         });
         console.log(`📤 [${socketId}] Broadcasted ${data.length} bytes to ${sentCount} rover(s)`);
     } else {
