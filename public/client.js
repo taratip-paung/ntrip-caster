@@ -62,7 +62,19 @@ function renderMap(mapData) {
             color: '#3273dc',
             fillColor: '#b3c9ff',
             fillOpacity: 0.9
-        }).bindPopup(`<strong>${base.name}</strong><br>Base Station${typeof base.altMsl === 'number' ? `<br>MSL ${base.altMsl.toFixed(2)} m` : ''}`);
+        }).bindPopup(() => {
+            const lines = [`<strong>${base.name}</strong>`, 'Base Station'];
+            if (typeof base.altMsl === 'number') {
+                lines.push(`MSL ${base.altMsl.toFixed(2)} m`);
+            }
+            if (typeof base.alt === 'number' && base.alt !== base.altMsl) {
+                lines.push(`Ellip ${base.alt.toFixed(2)} m`);
+            }
+            if (base.geoidModel) {
+                lines.push(`<span class="tag is-light is-size-7">${base.geoidModel}</span>`);
+            }
+            return lines.join('<br>');
+        });
         marker.addTo(baseLayer);
         bounds.push([base.lat, base.lon]);
     });

@@ -1,11 +1,11 @@
 const net = require('net');
-const https = require('https');
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
 const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcryptjs');
 const path = require('path');
+const fs = require('fs');
 
 // ==========================================
 // ⚙️ CONFIGURATION
@@ -46,10 +46,22 @@ db.serialize(() => {
 // ==========================================
 const activeMountpoints = new Map(); 
 const activeClients = new Map();     
-const geoidCache = new Map();
-const inflightGeoidRequests = new Map();
-const GEOID_PROVIDER = process.env.GEOID_PROVIDER || 'NOAA_EGM96';
-const ENABLE_GEOID_LOOKUP = GEOID_PROVIDER !== 'NONE';
+
+const GEOID_MODEL = process.env.GEOID_MODEL || 'EGM96';
+const EGM96_INTERVAL_DEG = 15 / 60; // 0.25 degrees grid spacing
+const EGM96_NUM_ROWS = 721;
+const EGM96_NUM_COLS = 1440;
+const EGM96_DATA_PATH = path.join(__dirname, 'node_modules', 'egm96', 'WW15MGH.DAC');
+let egm96Data = null;
+if (GEOID_MODEL === 'EGM96') {
+    try {
+        egm96Data = fs.readFileSync(EGM96_DATA_PATH);
+        console.log('📦 Loaded EGM96 geoid grid for MSL conversion');
+    } catch (err) {
+        console.warn(`⚠️ Unable to load EGM96 grid at ${EGM96_DATA_PATH}: ${err.message}`);
+    }
+}
+const GEOID_MODEL_LABEL = egm96Data ? 'EGM96' : null;
 
 function readBitsFromBuffer(buffer, bitStart, bitLength) {
     let value = 0n;
@@ -95,6 +107,63 @@ function ecefToGeodetic(x, y, z) {
         lon: lon * 180 / Math.PI,
         alt: alt
     };
+}
+
+function egm96GetPost(row, col) {
+    if (!egm96Data) return null;
+    if (row < 0) row = 0;
+    if (row >= EGM96_NUM_ROWS) row = EGM96_NUM_ROWS - 1;
+    if (col < 0) col = (col % EGM96_NUM_COLS + EGM96_NUM_COLS) % EGM96_NUM_COLS;
+    const index = row * EGM96_NUM_COLS + col;
+    const offset = index * 2;
+    if (offset < 0 || offset + 2 > egm96Data.length) return null;
+    return egm96Data.readInt16BE(offset);
+}
+
+function getEgm96Undulation(lat, lon) {
+    if (!egm96Data || typeof lat !== 'number' || typeof lon !== 'number') return null;
+    let longitude = lon;
+    if (longitude < 0) longitude += 360;
+    if (longitude >= 360) longitude -= 360;
+    if (lat > 90) lat = 90;
+    if (lat < -90) lat = -90;
+
+    let topRow = Math.round((90 - lat) / EGM96_INTERVAL_DEG);
+    if (lat <= -90) topRow = EGM96_NUM_ROWS - 2;
+    if (topRow < 0) topRow = 0;
+    if (topRow >= EGM96_NUM_ROWS - 1) topRow = EGM96_NUM_ROWS - 2;
+    const bottomRow = topRow + 1;
+
+    let leftCol = Math.round(longitude / EGM96_INTERVAL_DEG);
+    if (leftCol < 0) leftCol = 0;
+    if (leftCol >= EGM96_NUM_COLS) leftCol = EGM96_NUM_COLS - 1;
+    let rightCol = leftCol + 1;
+    if (longitude >= 360 - EGM96_INTERVAL_DEG) {
+        leftCol = EGM96_NUM_COLS - 1;
+        rightCol = 0;
+    } else if (rightCol >= EGM96_NUM_COLS) {
+        rightCol = 0;
+    }
+
+    const latTop = 90 - topRow * EGM96_INTERVAL_DEG;
+    const lonLeft = leftCol * EGM96_INTERVAL_DEG;
+
+    const ul = egm96GetPost(topRow, leftCol);
+    const ll = egm96GetPost(bottomRow, leftCol);
+    const lr = egm96GetPost(bottomRow, rightCol);
+    const ur = egm96GetPost(topRow, rightCol);
+    if ([ul, ll, lr, ur].some(v => v === null)) return null;
+
+    const u = (longitude - lonLeft) / EGM96_INTERVAL_DEG;
+    const v = (latTop - lat) / EGM96_INTERVAL_DEG;
+
+    const pll = (1 - u) * (1 - v);
+    const plr = u * (1 - v);
+    const pur = u * v;
+    const pul = (1 - u) * v;
+
+    const offsetCm = pll * ll + plr * lr + pur * ur + pul * ul;
+    return offsetCm / 100; // convert centimeters to meters
 }
 
 function parseRtcmAntennaPosition(payload, messageId) {
@@ -202,7 +271,7 @@ function processRtcmFrames(buffer, mountpointState) {
                     if (typeof geo.arpHeight === 'number') {
                         mountpointState.autoHeight = geo.arpHeight;
                     }
-                    queueGeoidLookup(mountpointState, geo.lat, geo.lon, geo.alt);
+                    applyGeoidCorrection(mountpointState, geo.lat, geo.lon, geo.alt);
                 }
             }
         }
@@ -211,74 +280,18 @@ function processRtcmFrames(buffer, mountpointState) {
     return ids;
 }
 
-function queueGeoidLookup(mountpointState, lat, lon, ellipsoidAlt) {
-    if (!ENABLE_GEOID_LOOKUP || typeof lat !== 'number' || typeof lon !== 'number') {
-        mountpointState.baseMslAlt = ellipsoidAlt;
-        return;
-    }
-    const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
-    if (geoidCache.has(key)) {
-        const undulation = geoidCache.get(key);
-        if (typeof undulation === 'number') {
-            mountpointState.geoidUndulation = undulation;
-            mountpointState.baseMslAlt = typeof ellipsoidAlt === 'number' ? ellipsoidAlt - undulation : null;
-        }
-        return;
-    }
+function applyGeoidCorrection(mountpointState, lat, lon, ellipsoidAlt) {
     mountpointState.baseMslAlt = ellipsoidAlt;
-    if (inflightGeoidRequests.has(key)) return;
-    const requestPromise = fetchGeoidUndulation(lat, lon)
-        .then((undulation) => {
-            geoidCache.set(key, undulation);
-            if (typeof undulation === 'number') {
-                mountpointState.geoidUndulation = undulation;
-                mountpointState.baseMslAlt = typeof ellipsoidAlt === 'number' ? ellipsoidAlt - undulation : null;
-            }
-        })
-        .catch((err) => {
-            console.warn(`⚠️ Unable to fetch geoid height for ${key}: ${err.message}`);
-            geoidCache.set(key, null);
-        })
-        .finally(() => {
-            inflightGeoidRequests.delete(key);
-        });
-    inflightGeoidRequests.set(key, requestPromise);
-}
-
-function fetchGeoidUndulation(lat, lon) {
-    return new Promise((resolve, reject) => {
-        if (GEOID_PROVIDER !== 'NOAA_EGM96') {
-            return resolve(null);
+    if (!egm96Data) {
+        return;
+    }
+    const undulation = getEgm96Undulation(lat, lon);
+    if (typeof undulation === 'number') {
+        mountpointState.geoidUndulation = undulation;
+        if (typeof ellipsoidAlt === 'number') {
+            mountpointState.baseMslAlt = ellipsoidAlt - undulation;
         }
-        const params = new URLSearchParams({
-            lat: lat.toFixed(7),
-            lon: lon.toFixed(7),
-            units: 'meters'
-        });
-        const url = `https://geodesy.noaa.gov/api/geoid/egm96?${params.toString()}`;
-        https
-            .get(url, (res) => {
-                let data = '';
-                res.on('data', chunk => { data += chunk; });
-                res.on('end', () => {
-                    if (res.statusCode !== 200) {
-                        return reject(new Error(`HTTP ${res.statusCode}`));
-                    }
-                    try {
-                        const parsed = JSON.parse(data);
-                        const value = parsed.geoidHeight !== undefined ? Number(parsed.geoidHeight) : null;
-                        if (Number.isFinite(value)) {
-                            resolve(value);
-                        } else {
-                            reject(new Error('Invalid response'));
-                        }
-                    } catch (err) {
-                        reject(err);
-                    }
-                });
-            })
-            .on('error', reject);
-    });
+    }
 }
 
 function summarizeRtcmMessages(messageSet) {
@@ -336,8 +349,12 @@ app.get('/api/status', (req, res) => {
         const resolvedLat = typeof mpData.autoLat === 'number' ? mpData.autoLat : (typeof mpData.lat === 'number' ? mpData.lat : null);
         const resolvedLon = typeof mpData.autoLon === 'number' ? mpData.autoLon : (typeof mpData.lon === 'number' ? mpData.lon : null);
         const resolvedAlt = typeof mpData.autoAlt === 'number' ? mpData.autoAlt : null;
-        const resolvedMsl = typeof mpData.baseMslAlt === 'number' ? mpData.baseMslAlt : (resolvedAlt !== null && typeof mpData.geoidUndulation === 'number' ? resolvedAlt - mpData.geoidUndulation : resolvedAlt);
-        const geoidSource = typeof mpData.geoidUndulation === 'number' ? (GEOID_PROVIDER === 'NOAA_EGM96' ? 'EGM96 (NOAA)' : GEOID_PROVIDER) : null;
+        const resolvedMsl = typeof mpData.baseMslAlt === 'number'
+            ? mpData.baseMslAlt
+            : (resolvedAlt !== null && typeof mpData.geoidUndulation === 'number'
+                ? resolvedAlt - mpData.geoidUndulation
+                : resolvedAlt);
+        const geoidSource = typeof mpData.geoidUndulation === 'number' ? (GEOID_MODEL_LABEL || 'EGM96') : null;
         if (mpData.clients.size === 0) {
             connectionList.push({ 
                 mountpoint: mpName, 
@@ -393,7 +410,8 @@ app.get('/api/status', (req, res) => {
                 lon,
                 auto: typeof mpData.autoLat === 'number',
                 alt: typeof mpData.autoAlt === 'number' ? mpData.autoAlt : null,
-                altMsl: typeof mpData.baseMslAlt === 'number' ? mpData.baseMslAlt : null
+                altMsl: typeof mpData.baseMslAlt === 'number' ? mpData.baseMslAlt : null,
+                geoidModel: typeof mpData.geoidUndulation === 'number' ? (GEOID_MODEL_LABEL || 'EGM96') : null
             });
         }
     });
@@ -652,7 +670,10 @@ function processHandshake(socket, header, firstDataChunk, socketId, setAuthentic
                     autoLat: null,
                     autoLon: null,
                     autoAlt: null,
-                    lastAutoPosition: null
+                    lastAutoPosition: null,
+                    autoHeight: null,
+                    baseMslAlt: null,
+                    geoidUndulation: null
                 });
                 
                 console.log(`✅ [${socketId}] Base [${mountpoint}] Connected and Ready`);
