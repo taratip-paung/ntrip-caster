@@ -76,6 +76,15 @@ function renderMap(mapData) {
             return lines.join('<br>');
         });
         marker.addTo(baseLayer);
+        const label = L.marker([base.lat, base.lon], {
+            icon: L.divIcon({
+                className: 'base-label',
+                html: `<span>${base.name}</span>`,
+                iconSize: [0, 0],
+                iconAnchor: [0, 0]
+            })
+        });
+        label.addTo(baseLayer);
         bounds.push([base.lat, base.lon]);
     });
 
