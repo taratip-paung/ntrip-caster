@@ -834,15 +834,12 @@ function handleSourceData(socket, data) {
         let sentCount = 0;
         mp.clients.forEach(c => {
             if (!c.destroyed && c.writable) {
-                const writeSuccess = c.write(data);
-                if (writeSuccess) {
-                    // นับ bytes ที่ส่งให้ rover แต่ละตัว
-                    const clientInfo = activeClients.get(c);
-                    if (clientInfo) {
-                        clientInfo.bytesReceived = (clientInfo.bytesReceived || 0) + data.length;
-                    }
-                    sentCount++;
+                c.write(data);
+                const clientInfo = activeClients.get(c);
+                if (clientInfo) {
+                    clientInfo.bytesReceived = (clientInfo.bytesReceived || 0) + data.length;
                 }
+                sentCount++;
             } else {
                 console.log(`⚠️ [${socketId}] Skipping destroyed/unwritable client`);
             }
